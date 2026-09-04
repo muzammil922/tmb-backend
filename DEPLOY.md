@@ -15,8 +15,12 @@ Repository: https://github.com/muzammil922/tmb-backend
 
 | Setting | Value |
 |---------|-------|
-| Build Type | Dockerfile |
+| Build Type | **Dockerfile** (not Nixpacks) |
+| Dockerfile path | `Dockerfile` |
 | Port | 4000 |
+| Start command | Leave empty (Dockerfile CMD runs `node dist/main.js`) |
+
+> **Important:** If logs show `nest start` and Node 18, Dokploy is using Nixpacks instead of the Dockerfile. Switch Build Type to **Dockerfile** and redeploy.
 
 ### Environment variables (Dokploy UI only — never commit)
 
