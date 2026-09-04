@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum MovieStatus {
+  ACTIVE
+  DRAFT
+}
+
+enum MovieSource {
+  TMDB
+  MANUAL
+}
+
+enum SectionMode {
+  AUTO
+  MANUAL
+}
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  password     String?
+  avatar       String?
+  role         UserRole   @default(USER)
+  status       UserStatus @default(ACTIVE)
+  googleId     String?    @unique
+  refreshToken String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  watchlists   Watchlist[]
+  favorites    Favorite[]
+  watchHistory WatchHistory[]
+}
+
+model Movie {
+  id            String      @id @default(cuid())
+  tmdbId        Int?        @unique
+  title         String
+  originalTitle String?
+  overview      String?
+  posterPath    String?
+  backdropPath  String?
+  releaseDate   DateTime?
+  runtime       Int?
+  rating        Float?
+  voteCount     Int?
+  language      String?
+  status        MovieStatus @default(DRAFT)
+  source        MovieSource @default(TMDB)
+  featured      Boolean     @default(false)
+  videoUrl      String?
+  videoProvider String?
+  videoDuration Int?
+  trailerKey    String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  genres              MovieGenre[]
+  cast                MovieCast[]
+  watchlists          Watchlist[]
+  favorites           Favorite[]
+  watchHistory        WatchHistory[]
+  homepageSectionMovies HomepageSectionMovie[]
+  categoryMovies      CategoryMovie[]
+}
+
+model Genre {
+  id     String @id @default(cuid())
+  tmdbId Int?   @unique
+  name   String @unique
+
+  movies MovieGenre[]
+}
+
+model MovieGenre {
+  movieId String
+  genreId String
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([movieId, genreId])
+}
+
+model MovieCast {
+  id           String  @id @default(cuid())
+  movieId      String
+  tmdbPersonId Int?
+  name         String
+  character    String?
+  profilePath  String?
+  order        Int     @default(0)
+  movie        Movie   @relation(fields: [movieId], references: [id], onDelete: Cascade)
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  movieId   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie     Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, movieId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  movieId   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie     Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, movieId])
+}
+
+model WatchHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  movieId   String
+  progress  Float    @default(0)
+  watchedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie     Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, movieId])
+}
+
+model HomepageSection {
+  id       String      @id @default(cuid())
+  title    String
+  type     String
+  order    Int         @default(0)
+  isActive Boolean     @default(true)
+  mode     SectionMode @default(AUTO)
+  config   Json?
+
+  movies HomepageSectionMovie[]
+}
+
+model HomepageSectionMovie {
+  id        String @id @default(cuid())
+  sectionId String
+  movieId   String
+  order     Int    @default(0)
+  section   HomepageSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  movie     Movie           @relation(fields: [movieId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, movieId])
+}
+
+model Banner {
+  id         String    @id @default(cuid())
+  title      String
+  subtitle   String?
+  imageUrl   String
+  buttonText String?
+  buttonUrl  String?
+  startDate  DateTime?
+  endDate    DateTime?
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  movies CategoryMovie[]
+}
+
+model CategoryMovie {
+  id         String @id @default(cuid())
+  categoryId String
+  movieId    String
+  order      Int    @default(0)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  movie      Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, movieId])
+}
