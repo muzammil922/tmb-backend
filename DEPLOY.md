@@ -28,7 +28,7 @@ Repository: https://github.com/muzammil922/tmb-backend
 NODE_ENV=production
 PORT=4000
 
-DATABASE_URL=<neon-pooled-url>?sslmode=require
+DATABASE_URL=<neon-direct-url>?sslmode=require
 
 JWT_SECRET=<random-32+-chars>
 JWT_REFRESH_SECRET=<random-32+-chars>
@@ -55,7 +55,9 @@ ADMIN_NAME=TMB Admin
 
 **Verify:** `GET /api/health` and `/api/docs`
 
-**Security:** Rotate Neon password if it was ever shared publicly. Use pooled URL for production.
+**Neon URL:** Use the **direct** connection string (no `-pooler` in hostname) for `DATABASE_URL` so `prisma migrate deploy` works on startup. Example host: `ep-xxx.c-2.us-east-2.aws.neon.tech` (not `ep-xxx-pooler...`).
+
+**Security:** Rotate Neon password if it was ever shared publicly.
 
 ---
 
