@@ -3,6 +3,7 @@ import { Movie, MovieStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { ContentSyncService } from '../sync/content-sync.service';
 
 type MovieWithRelations = Movie & {
   genres?: { genre: { id: string; tmdbId: number | null; name: string } }[];
@@ -15,6 +16,7 @@ export class MoviesService {
     private readonly prisma: PrismaService,
     private readonly tmdb: TmdbService,
     private readonly cache: CacheService,
+    private readonly contentSync: ContentSyncService,
   ) {}
 
   private mapMovie(movie: MovieWithRelations) {
@@ -45,6 +47,7 @@ export class MoviesService {
         character: c.character,
         profilePath: c.profilePath,
       })),
+      playback: this.contentSync.buildPlaybackBlock(movie),
     };
   }
 

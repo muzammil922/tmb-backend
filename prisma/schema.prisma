@@ -33,6 +33,31 @@ enum SectionMode {
   MANUAL
 }
 
+enum ContentType {
+  MOVIE
+  SERIES
+}
+
+enum ContentSource {
+  URDBOX
+  MOVIESAPI
+  TMDB_ONLY
+  HOSTED
+}
+
+enum PlaybackMode {
+  URDBOX
+  EMBED
+  HOSTED
+}
+
+enum SyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 model User {
   id           String     @id @default(cuid())
   name         String
@@ -71,6 +96,10 @@ model Movie {
   videoProvider String?
   videoDuration Int?
   trailerKey    String?
+  contentSource   ContentSource?
+  playbackMode    PlaybackMode?
+  upstreamId      String?
+  upstreamSyncedAt DateTime?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -203,4 +232,68 @@ model CategoryMovie {
   movie      Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
 
   @@unique([categoryId, movieId])
+}
+
+model SyncSettings {
+  id                String   @id @default("default")
+  urduboxEnabled    Boolean  @default(false)
+  moviesApiEnabled  Boolean  @default(false)
+  automationEnabled Boolean  @default(false)
+  scheduleStart     String?
+  scheduleEnd       String?
+  cronExpression    String?
+  maxPagesPerRun    Int      @default(10)
+  resultsPerPage    Int      @default(50)
+  updatedAt         DateTime @updatedAt
+}
+
+model SyncJob {
+  id           String        @id @default(cuid())
+  source       ContentSource
+  status       SyncStatus    @default(PENDING)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  imported     Int           @default(0)
+  skipped      Int           @default(0)
+  failed       Int           @default(0)
+  errorMessage String?
+  createdAt    DateTime      @default(now())
+  logs         SyncLog[]
+}
+
+model SyncLog {
+  id          String      @id @default(cuid())
+  jobId       String
+  job         SyncJob     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  tmdbId      Int?
+  upstreamId  String?
+  title       String?
+  action      String
+  reason      String?
+  contentType ContentType
+  createdAt   DateTime    @default(now())
+}
+
+model Series {
+  id               String         @id @default(cuid())
+  tmdbId           Int?           @unique
+  upstreamId       String?
+  title            String
+  originalTitle    String?
+  overview         String?
+  posterPath       String?
+  backdropPath     String?
+  firstAirDate     DateTime?
+  lastAirDate      DateTime?
+  numberOfSeasons  Int?
+  numberOfEpisodes Int?
+  rating           Float?
+  voteCount        Int?
+  language         String?
+  status           MovieStatus    @default(DRAFT)
+  contentSource    ContentSource?
+  playbackMode     PlaybackMode?
+  upstreamSyncedAt DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 }

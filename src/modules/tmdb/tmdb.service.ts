@@ -79,6 +79,10 @@ export class TmdbService {
     return this.request(`/movie/${id}`, { append_to_response: 'videos,credits' }, 86400);
   }
 
+  tvDetails(id: number) {
+    return this.request(`/tv/${id}`, { append_to_response: 'videos,credits' }, 86400);
+  }
+
   movieCredits(id: number) {
     return this.request(`/movie/${id}/credits`, {}, 86400);
   }

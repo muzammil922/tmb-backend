@@ -18,6 +18,7 @@ import { AdminBannersModule } from './modules/admin/banners/admin-banners.module
 import { AdminCategoriesModule } from './modules/admin/categories/admin-categories.module';
 import { AdminUsersModule } from './modules/admin/users/admin-users.module';
 import { MediaModule } from './modules/media/media.module';
+import { SyncModule } from './modules/sync/sync.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -41,6 +42,7 @@ import { AppController } from './app.controller';
     AdminCategoriesModule,
     AdminUsersModule,
     MediaModule,
+    SyncModule,
   ],
   controllers: [AppController],
 })
