@@ -11,8 +11,11 @@ async function bootstrap() {
     origin: [
       process.env.WEBSITE_URL || 'http://localhost:3000',
       process.env.ADMIN_URL || 'http://localhost:5173',
+      'https://urdubox.pk',
+      'https://www.urdubox.pk',
     ],
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Bridge-Token'],
   });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 

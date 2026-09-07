@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ContentSource, ContentType, SyncStatus } from '@prisma/client';
+import { CacheService } from '../../common/cache/cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ContentSyncService } from './content-sync.service';
 import { UrduboxClient } from './clients/urdubox.client';
@@ -19,6 +21,7 @@ export class SyncService {
     private readonly contentSync: ContentSyncService,
     private readonly urdubox: UrduboxClient,
     private readonly moviesApi: MoviesApiClient,
+    private readonly cache: CacheService,
   ) {}
 
   async getSettings() {
@@ -200,7 +203,17 @@ export class SyncService {
         errorMessage: 'Browser-assisted import',
       },
     });
-    return { jobId: job.id };
+    const bridgeToken = randomUUID();
+    await this.cache.set(`urdubox-bridge:${bridgeToken}`, { jobId: job.id }, 3600);
+    return { jobId: job.id, bridgeToken };
+  }
+
+  validateBridgeToken(token: string, jobId: string) {
+    return this.cache.get<{ jobId: string }>(`urdubox-bridge:${token}`).then((data) => data?.jobId === jobId);
+  }
+
+  async getJobById(id: string) {
+    return this.prisma.syncJob.findUnique({ where: { id } });
   }
 
   async browserImportUrduboxBatch(

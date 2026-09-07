@@ -72,6 +72,11 @@ export class SyncController {
     return this.syncService.forceStopJob(id);
   }
 
+  @Get('jobs/:id')
+  getJob(@Param('id') id: string) {
+    return this.syncService.getJobById(id);
+  }
+
   @Get('jobs/:id/logs')
   jobLogs(@Param('id') id: string, @Query('page') page = '1') {
     return this.syncService.getJobLogs(id, Number(page));
