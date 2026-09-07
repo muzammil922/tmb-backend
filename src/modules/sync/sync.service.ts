@@ -77,20 +77,74 @@ export class SyncService {
     return { data, page, totalPages: Math.ceil(total / take) || 1, totalResults: total };
   }
 
-  getStatus() {
+  async getStatus() {
+    const runningJobs = await this.prisma.syncJob.findMany({
+      where: { status: SyncStatus.RUNNING },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        source: true,
+        imported: true,
+        skipped: true,
+        failed: true,
+        startedAt: true,
+      },
+    });
+
     return {
-      running: this.running,
+      running: this.running || runningJobs.length > 0,
       cancelRequested: this.cancelRequested,
       activeJobId: this.activeJobId,
+      runningJobs,
     };
   }
 
   async stopSync() {
-    if (!this.running) {
+    if (this.running) {
+      this.cancelRequested = true;
+      await this.updateSettings({ automationEnabled: false });
+      return { stopped: true, message: 'Stop requested — sync will halt after the current item' };
+    }
+
+    const runningJobs = await this.prisma.syncJob.findMany({
+      where: { status: SyncStatus.RUNNING },
+      select: { id: true },
+    });
+
+    if (!runningJobs.length) {
       return { stopped: false, message: 'No sync is currently running' };
     }
-    this.cancelRequested = true;
-    return { stopped: true, message: 'Stop requested — sync will halt after the current item' };
+
+    for (const job of runningJobs) {
+      await this.forceStopJob(job.id);
+    }
+
+    await this.updateSettings({ automationEnabled: false });
+    return { stopped: true, message: 'Running jobs force-stopped' };
+  }
+
+  async forceStopJob(jobId: string) {
+    const job = await this.prisma.syncJob.findUnique({ where: { id: jobId } });
+    if (!job || job.status !== SyncStatus.RUNNING) {
+      return { stopped: false, message: 'Job is not running' };
+    }
+
+    if (this.running) {
+      this.cancelRequested = true;
+      if (!this.activeJobId) this.activeJobId = jobId;
+      return { stopped: true, message: 'Stop requested — halting after current item' };
+    }
+
+    await this.prisma.syncJob.update({
+      where: { id: jobId },
+      data: {
+        status: SyncStatus.COMPLETED,
+        completedAt: new Date(),
+        errorMessage: 'Force stopped by user',
+      },
+    });
+
+    return { stopped: true, message: 'Job marked as stopped' };
   }
 
   async stopAutomation() {
@@ -194,6 +248,7 @@ export class SyncService {
           const tmdbId = this.urdubox.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
+            await this.updateJobProgress(job.id, imported, skipped, failed);
             continue;
           }
 
@@ -208,6 +263,7 @@ export class SyncService {
           } catch {
             failed++;
           }
+          await this.updateJobProgress(job.id, imported, skipped, failed);
         }
 
         if (items.length < resultsPerPage) break;
@@ -225,6 +281,7 @@ export class SyncService {
           const tmdbId = this.urdubox.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
+            await this.updateJobProgress(job.id, imported, skipped, failed);
             continue;
           }
 
@@ -239,6 +296,7 @@ export class SyncService {
           } catch {
             failed++;
           }
+          await this.updateJobProgress(job.id, imported, skipped, failed);
         }
 
         if (items.length < resultsPerPage) break;
@@ -296,6 +354,7 @@ export class SyncService {
           const tmdbId = this.moviesApi.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
+            await this.updateJobProgress(job.id, imported, skipped, failed);
             continue;
           }
 
@@ -306,6 +365,7 @@ export class SyncService {
           } catch {
             failed++;
           }
+          await this.updateJobProgress(job.id, imported, skipped, failed);
         }
 
         if (items.length < resultsPerPage) break;
@@ -323,6 +383,7 @@ export class SyncService {
           const tmdbId = this.moviesApi.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
+            await this.updateJobProgress(job.id, imported, skipped, failed);
             continue;
           }
 
@@ -333,6 +394,7 @@ export class SyncService {
           } catch {
             failed++;
           }
+          await this.updateJobProgress(job.id, imported, skipped, failed);
         }
 
         if (items.length < resultsPerPage) break;
@@ -395,6 +457,16 @@ export class SyncService {
     });
     this.logger.log(`Sync job ${jobId} stopped by user: imported=${imported} skipped=${skipped} failed=${failed}`);
     return job;
+  }
+
+  private async updateJobProgress(jobId: string, imported: number, skipped: number, failed: number) {
+    const total = imported + skipped + failed;
+    if (total === 0 || total % 3 !== 0) return;
+
+    await this.prisma.syncJob.update({
+      where: { id: jobId },
+      data: { imported, skipped, failed },
+    });
   }
 
   private delay(ms: number) {
