@@ -8,6 +8,7 @@ import { ContentSyncService } from './content-sync.service';
 import { SyncService } from './sync.service';
 import { UpdateSyncSettingsDto } from './dto/update-sync-settings.dto';
 import { RunSyncDto } from './dto/run-sync.dto';
+import { BrowserUrduboxBatchDto } from './dto/browser-urdubox-import.dto';
 import { PublishOwnDto } from './dto/publish-own.dto';
 
 @ApiTags('admin-sync')
@@ -49,6 +50,16 @@ export class SyncController {
   @Post('stop-automation')
   stopAutomation() {
     return this.syncService.stopAutomation();
+  }
+
+  @Post('urdubox/browser/start')
+  startBrowserUrdubox() {
+    return this.syncService.startBrowserUrduboxJob();
+  }
+
+  @Post('urdubox/browser/batch')
+  browserUrduboxBatch(@Body() body: BrowserUrduboxBatchDto) {
+    return this.syncService.browserImportUrduboxBatch(body.jobId, body.items ?? [], body.finalize ?? false);
   }
 
   @Get('jobs')

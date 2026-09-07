@@ -191,6 +191,63 @@ export class SyncService {
     }
   }
 
+  async startBrowserUrduboxJob() {
+    const job = await this.prisma.syncJob.create({
+      data: {
+        source: ContentSource.URDBOX,
+        status: SyncStatus.RUNNING,
+        startedAt: new Date(),
+        errorMessage: 'Browser-assisted import',
+      },
+    });
+    return { jobId: job.id };
+  }
+
+  async browserImportUrduboxBatch(
+    jobId: string,
+    items: { tmdbId: number; upstreamId: string; type: 'movie' | 'series' }[] = [],
+    finalize = false,
+  ) {
+    const job = await this.prisma.syncJob.findUnique({ where: { id: jobId } });
+    if (!job || job.status !== SyncStatus.RUNNING) {
+      return { error: 'Job not found or not running', jobId };
+    }
+
+    let imported = job.imported;
+    let skipped = job.skipped;
+    let failed = job.failed;
+
+    for (const item of items ?? []) {
+      if (!item.tmdbId || !item.upstreamId) {
+        failed++;
+        continue;
+      }
+
+      try {
+        const result =
+          item.type === 'series'
+            ? await this.contentSync.importSeriesFromUrdubox(item.tmdbId, item.upstreamId, jobId)
+            : await this.contentSync.importMovieFromUrdubox(item.tmdbId, item.upstreamId, jobId);
+
+        if (result.imported) imported++;
+        else skipped++;
+      } catch {
+        failed++;
+      }
+    }
+
+    await this.prisma.syncJob.update({
+      where: { id: jobId },
+      data: { imported, skipped, failed },
+    });
+
+    if (finalize) {
+      await this.completeJob(jobId, imported, skipped, failed, 'Browser-assisted import completed');
+    }
+
+    return { jobId, imported, skipped, failed, completed: finalize };
+  }
+
   private shouldStop() {
     return this.cancelRequested;
   }
