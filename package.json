@@ -3,7 +3,13 @@
   "version": "0.0.1",
   "private": true,
   "license": "UNLICENSED",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "build": "nest build",
     "dev": "nest start --watch",
     "start": "node dist/main.js",
