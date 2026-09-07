@@ -7,17 +7,19 @@ import { CacheService } from '../../../common/cache/cache.service';
 export interface UpstreamDiscoverItem {
   _id?: string;
   id?: string;
-  tmdbId?: number;
-  tmdbid?: number;
+  tmdbId?: number | string;
+  tmdbid?: number | string;
   title?: string;
   name?: string;
 }
 
 export interface UpstreamDiscoverResponse {
   results?: UpstreamDiscoverItem[];
+  result?: boolean | UpstreamDiscoverItem[];
   data?: UpstreamDiscoverItem[];
   page?: number;
   totalPages?: number;
+  total?: number;
   totalResults?: number;
 }
 
@@ -55,50 +57,72 @@ export class UrduboxClient {
     try {
       const response = await firstValueFrom(
         this.http.get<T>(url, {
-          headers: { Accept: 'application/json' },
+          headers: {
+            Accept: 'application/json',
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            Referer: `${this.baseUrl}/`,
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
           timeout: 30000,
         }),
       );
       await this.cache.set(cacheKey, response.data, ttl);
       return response.data;
-    } catch (error) {
-      this.logger.warn(`Urdubox request failed: ${url}`);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const message = error?.response?.data?.message ?? error?.message ?? 'unknown';
+      this.logger.warn(`Urdubox request failed: ${url} (${status ?? 'network'}: ${message})`);
       return null;
     }
   }
 
   discoverMovies(page = 1, resultsPerPage = 50) {
-    return this.request<UpstreamDiscoverResponse>('/api/discover/movies', {
+    return this.request<UpstreamDiscoverResponse>('/api/movies/public', {
       page,
-      resultsPerPage,
+      limit: resultsPerPage,
       ordering: 'views',
       direction: 'desc',
     });
   }
 
   discoverTv(page = 1, resultsPerPage = 50) {
-    return this.request<UpstreamDiscoverResponse>('/api/discover/tv', {
+    return this.request<UpstreamDiscoverResponse>('/api/series/public', {
       page,
-      resultsPerPage,
+      limit: resultsPerPage,
       ordering: 'views',
       direction: 'desc',
     });
   }
 
-  findMovieByTmdbId(tmdbId: number) {
-    return this.request<UpstreamDiscoverResponse>('/api/discover/movies', {
-      page: 1,
-      resultsPerPage: 10,
-      tmdbid: tmdbId,
-    }, 60);
+  async findMovieByTmdbId(tmdbId: number) {
+    return this.findByTmdbId('/api/movies/public', tmdbId);
   }
 
-  findSeriesByTmdbId(tmdbId: number) {
-    return this.request<UpstreamDiscoverResponse>('/api/discover/tv', {
-      page: 1,
-      resultsPerPage: 10,
-      tmdbid: tmdbId,
-    }, 60);
+  async findSeriesByTmdbId(tmdbId: number) {
+    return this.findByTmdbId('/api/series/public', tmdbId);
+  }
+
+  private async findByTmdbId(path: string, tmdbId: number, maxPages = 30) {
+    for (let page = 1; page <= maxPages; page++) {
+      const response = await this.request<UpstreamDiscoverResponse>(
+        path,
+        {
+          page,
+          limit: 50,
+          ordering: 'views',
+          direction: 'desc',
+        },
+        60,
+      );
+      const items = this.extractItems(response);
+      const match = items.find((item) => this.resolveTmdbId(item) === tmdbId);
+      if (match) return { data: [match], results: [match] };
+
+      if (!items.length || items.length < 50) break;
+    }
+
+    return { data: [], results: [] };
   }
 
   getMoviePublic(upstreamId: string) {
@@ -172,12 +196,17 @@ export class UrduboxClient {
 
   extractItems(response: UpstreamDiscoverResponse | null): UpstreamDiscoverItem[] {
     if (!response) return [];
-    return response.results ?? response.data ?? [];
+    if (Array.isArray(response.data)) return response.data;
+    if (Array.isArray(response.results)) return response.results;
+    if (Array.isArray(response.result)) return response.result;
+    return [];
   }
 
   resolveTmdbId(item: UpstreamDiscoverItem): number | null {
     const id = item.tmdbId ?? item.tmdbid;
-    return typeof id === 'number' ? id : null;
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    if (typeof id === 'string' && /^\d+$/.test(id)) return Number(id);
+    return null;
   }
 
   resolveUpstreamId(item: UpstreamDiscoverItem): string | null {

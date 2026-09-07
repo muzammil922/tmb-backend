@@ -51,8 +51,10 @@ export class MoviesApiClient {
       );
       await this.cache.set(cacheKey, response.data, ttl);
       return response.data;
-    } catch (error) {
-      this.logger.warn(`MoviesAPI request failed: ${url}`);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const message = error?.response?.data?.message ?? error?.message ?? 'unknown';
+      this.logger.warn(`MoviesAPI request failed: ${url} (${status ?? 'network'}: ${message})`);
       return null;
     }
   }
@@ -101,11 +103,16 @@ export class MoviesApiClient {
 
   extractItems(response: UpstreamDiscoverResponse | null): UpstreamDiscoverItem[] {
     if (!response) return [];
-    return response.results ?? response.data ?? [];
+    if (Array.isArray(response.data)) return response.data;
+    if (Array.isArray(response.results)) return response.results;
+    if (Array.isArray(response.result)) return response.result;
+    return [];
   }
 
   resolveTmdbId(item: UpstreamDiscoverItem): number | null {
     const id = item.tmdbId ?? item.tmdbid;
-    return typeof id === 'number' ? id : null;
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    if (typeof id === 'string' && /^\d+$/.test(id)) return Number(id);
+    return null;
   }
 }
