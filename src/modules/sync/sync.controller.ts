@@ -36,6 +36,21 @@ export class SyncController {
     return this.syncService.runSync(body.source ?? 'ALL');
   }
 
+  @Get('status')
+  getStatus() {
+    return this.syncService.getStatus();
+  }
+
+  @Post('stop')
+  stopSync() {
+    return this.syncService.stopSync();
+  }
+
+  @Post('stop-automation')
+  stopAutomation() {
+    return this.syncService.stopAutomation();
+  }
+
   @Get('jobs')
   listJobs(@Query('page') page = '1') {
     return this.syncService.listJobs(Number(page));

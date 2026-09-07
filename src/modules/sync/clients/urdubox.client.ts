@@ -28,6 +28,8 @@ export class UrduboxClient {
   private readonly logger = new Logger(UrduboxClient.name);
   private readonly baseUrl: string;
   private readonly enabled: boolean;
+  private readonly proxyUrl: string | null;
+  private lastRequestBlocked = false;
 
   constructor(
     private readonly http: HttpService,
@@ -36,10 +38,21 @@ export class UrduboxClient {
   ) {
     this.baseUrl = (this.config.get<string>('URDBOX_BASE_URL') || 'https://urdubox.pk').replace(/\/$/, '');
     this.enabled = this.config.get<string>('URDBOX_ENABLED') === 'true';
+    this.proxyUrl = this.config.get<string>('URDBOX_PROXY_URL') || null;
   }
 
   isEnabled() {
     return this.enabled;
+  }
+
+  wasLastRequestBlocked() {
+    return this.lastRequestBlocked;
+  }
+
+  private resolveRequestUrl(url: string) {
+    if (!this.proxyUrl) return url;
+    const separator = this.proxyUrl.includes('?') ? '' : '?url=';
+    return `${this.proxyUrl}${separator}${encodeURIComponent(url)}`;
   }
 
   private async request<T>(path: string, params: Record<string, string | number> = {}, ttl = 300): Promise<T | null> {
@@ -53,25 +66,29 @@ export class UrduboxClient {
       Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
     );
     const url = `${this.baseUrl}${path}${query.toString() ? `?${query.toString()}` : ''}`;
+    const requestUrl = this.resolveRequestUrl(url);
 
     try {
       const response = await firstValueFrom(
-        this.http.get<T>(url, {
+        this.http.get<T>(requestUrl, {
           headers: {
             Accept: 'application/json',
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             Referer: `${this.baseUrl}/`,
+            Origin: this.baseUrl,
             'Accept-Language': 'en-US,en;q=0.9',
           },
           timeout: 30000,
         }),
       );
+      this.lastRequestBlocked = false;
       await this.cache.set(cacheKey, response.data, ttl);
       return response.data;
     } catch (error: any) {
       const status = error?.response?.status;
       const message = error?.response?.data?.message ?? error?.message ?? 'unknown';
+      this.lastRequestBlocked = status === 403;
       this.logger.warn(`Urdubox request failed: ${url} (${status ?? 'network'}: ${message})`);
       return null;
     }

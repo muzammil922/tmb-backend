@@ -11,6 +11,8 @@ export type SyncRunSource = 'URDBOX' | 'MOVIESAPI' | 'ALL';
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
   private running = false;
+  private cancelRequested = false;
+  private activeJobId: string | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -75,26 +77,68 @@ export class SyncService {
     return { data, page, totalPages: Math.ceil(total / take) || 1, totalResults: total };
   }
 
+  getStatus() {
+    return {
+      running: this.running,
+      cancelRequested: this.cancelRequested,
+      activeJobId: this.activeJobId,
+    };
+  }
+
+  async stopSync() {
+    if (!this.running) {
+      return { stopped: false, message: 'No sync is currently running' };
+    }
+    this.cancelRequested = true;
+    return { stopped: true, message: 'Stop requested — sync will halt after the current item' };
+  }
+
+  async stopAutomation() {
+    const settings = await this.updateSettings({ automationEnabled: false });
+    if (this.running) {
+      this.cancelRequested = true;
+    }
+    return {
+      automationEnabled: settings.automationEnabled,
+      syncStopRequested: this.running,
+      message: this.running
+        ? 'Automation disabled and running sync will stop'
+        : 'Automation disabled',
+    };
+  }
+
   async runSync(source: SyncRunSource = 'ALL') {
     if (this.running) {
       return { message: 'Sync already running', started: false };
     }
 
     this.running = true;
+    this.cancelRequested = false;
+    this.activeJobId = null;
     const settings = await this.getSettings();
     const results: any[] = [];
 
     try {
       if ((source === 'URDBOX' || source === 'ALL') && settings.urduboxEnabled) {
-        results.push(await this.runUrduboxSync(settings.maxPagesPerRun, settings.resultsPerPage));
+        if (!this.cancelRequested) {
+          results.push(await this.runUrduboxSync(settings.maxPagesPerRun, settings.resultsPerPage));
+        }
       }
       if ((source === 'MOVIESAPI' || source === 'ALL') && settings.moviesApiEnabled) {
-        results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage));
+        if (!this.cancelRequested) {
+          results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage));
+        }
       }
-      return { started: true, results };
+      return { started: true, results, cancelled: this.cancelRequested };
     } finally {
       this.running = false;
+      this.cancelRequested = false;
+      this.activeJobId = null;
     }
+  }
+
+  private shouldStop() {
+    return this.cancelRequested;
   }
 
   async runScheduledSync() {
@@ -126,18 +170,27 @@ export class SyncService {
     const job = await this.prisma.syncJob.create({
       data: { source: ContentSource.URDBOX, status: SyncStatus.RUNNING, startedAt: new Date() },
     });
+    this.activeJobId = job.id;
 
     let imported = 0;
     let skipped = 0;
     let failed = 0;
+    let blockedByUpstream = false;
 
     try {
       for (let page = 1; page <= maxPages; page++) {
+        if (this.shouldStop()) break;
         const response = await this.urdubox.discoverMovies(page, resultsPerPage);
         const items = this.urdubox.extractItems(response);
-        if (!items.length) break;
+        if (!items.length) {
+          if (page === 1 && this.urdubox.wasLastRequestBlocked()) {
+            blockedByUpstream = true;
+          }
+          break;
+        }
 
         for (const item of items) {
+          if (this.shouldStop()) break;
           const tmdbId = this.urdubox.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
@@ -162,11 +215,13 @@ export class SyncService {
       }
 
       for (let page = 1; page <= maxPages; page++) {
+        if (this.shouldStop()) break;
         const response = await this.urdubox.discoverTv(page, resultsPerPage);
         const items = this.urdubox.extractItems(response);
         if (!items.length) break;
 
         for (const item of items) {
+          if (this.shouldStop()) break;
           const tmdbId = this.urdubox.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
@@ -190,6 +245,18 @@ export class SyncService {
         await this.delay(500);
       }
 
+      if (this.shouldStop()) {
+        return this.stopJob(job.id, imported, skipped, failed);
+      }
+      if (blockedByUpstream && imported === 0 && skipped === 0 && failed === 0) {
+        return this.completeJob(
+          job.id,
+          imported,
+          skipped,
+          failed,
+          'Urdubox blocked server IP (403). Set URDBOX_PROXY_URL in env or import manually.',
+        );
+      }
       return this.completeJob(job.id, imported, skipped, failed);
     } catch (error: any) {
       await this.prisma.syncJob.update({
@@ -211,6 +278,7 @@ export class SyncService {
     const job = await this.prisma.syncJob.create({
       data: { source: ContentSource.MOVIESAPI, status: SyncStatus.RUNNING, startedAt: new Date() },
     });
+    this.activeJobId = job.id;
 
     let imported = 0;
     let skipped = 0;
@@ -218,11 +286,13 @@ export class SyncService {
 
     try {
       for (let page = 1; page <= maxPages; page++) {
+        if (this.shouldStop()) break;
         const response = await this.moviesApi.discoverMovies(page, resultsPerPage);
         const items = this.moviesApi.extractItems(response);
         if (!items.length) break;
 
         for (const item of items) {
+          if (this.shouldStop()) break;
           const tmdbId = this.moviesApi.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
@@ -243,11 +313,13 @@ export class SyncService {
       }
 
       for (let page = 1; page <= maxPages; page++) {
+        if (this.shouldStop()) break;
         const response = await this.moviesApi.discoverTv(page, resultsPerPage);
         const items = this.moviesApi.extractItems(response);
         if (!items.length) break;
 
         for (const item of items) {
+          if (this.shouldStop()) break;
           const tmdbId = this.moviesApi.resolveTmdbId(item);
           if (!tmdbId) {
             failed++;
@@ -267,6 +339,9 @@ export class SyncService {
         await this.delay(500);
       }
 
+      if (this.shouldStop()) {
+        return this.stopJob(job.id, imported, skipped, failed);
+      }
       return this.completeJob(job.id, imported, skipped, failed);
     } catch (error: any) {
       await this.prisma.syncJob.update({
@@ -284,7 +359,13 @@ export class SyncService {
     }
   }
 
-  private async completeJob(jobId: string, imported: number, skipped: number, failed: number) {
+  private async completeJob(
+    jobId: string,
+    imported: number,
+    skipped: number,
+    failed: number,
+    errorMessage?: string,
+  ) {
     const job = await this.prisma.syncJob.update({
       where: { id: jobId },
       data: {
@@ -293,9 +374,26 @@ export class SyncService {
         imported,
         skipped,
         failed,
+        errorMessage: errorMessage ?? null,
       },
     });
     this.logger.log(`Sync job ${jobId} completed: imported=${imported} skipped=${skipped} failed=${failed}`);
+    return job;
+  }
+
+  private async stopJob(jobId: string, imported: number, skipped: number, failed: number) {
+    const job = await this.prisma.syncJob.update({
+      where: { id: jobId },
+      data: {
+        status: SyncStatus.COMPLETED,
+        completedAt: new Date(),
+        imported,
+        skipped,
+        failed,
+        errorMessage: 'Stopped by user',
+      },
+    });
+    this.logger.log(`Sync job ${jobId} stopped by user: imported=${imported} skipped=${skipped} failed=${failed}`);
     return job;
   }
 
