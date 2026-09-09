@@ -11,16 +11,57 @@ export class AdminMoviesService {
     private readonly tmdb: TmdbService,
   ) {}
 
-  async list(page = 1, search = '') {
+  async list(page = 1, search = '', limit = 50) {
     const where: Prisma.MovieWhereInput = search
       ? { title: { contains: search, mode: 'insensitive' } }
       : {};
-    const skip = (page - 1) * 20;
+    const skip = (page - 1) * limit;
     const [data, total] = await Promise.all([
-      this.prisma.movie.findMany({ where, orderBy: { updatedAt: 'desc' }, skip, take: 20 }),
+      this.prisma.movie.findMany({
+        where,
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          categoryMovies: {
+            include: {
+              category: true,
+            },
+          },
+          genres: {
+            include: {
+              genre: true,
+            },
+          },
+        },
+      }),
       this.prisma.movie.count({ where }),
     ]);
-    return { data, page, totalPages: Math.ceil(total / 20) || 1, totalResults: total };
+    return { data, page, totalPages: Math.ceil(total / limit) || 1, totalResults: total };
+  }
+
+  async findOne(id: string) {
+    const movie = await this.prisma.movie.findUnique({
+      where: { id },
+      include: {
+        categoryMovies: {
+          include: {
+            category: true,
+          },
+        },
+        genres: {
+          include: {
+            genre: true,
+          },
+        },
+        cast: {
+          orderBy: { order: 'asc' },
+          take: 20,
+        },
+      },
+    });
+    if (!movie) throw new NotFoundException('Movie not found');
+    return movie;
   }
 
   async createManual(data: {

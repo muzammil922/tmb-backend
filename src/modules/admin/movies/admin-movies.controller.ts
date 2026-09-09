@@ -15,8 +15,17 @@ export class AdminMoviesController {
   constructor(private readonly adminMoviesService: AdminMoviesService) {}
 
   @Get()
-  list(@Query('page') page = '1', @Query('search') search = '') {
-    return this.adminMoviesService.list(Number(page), search);
+  list(
+    @Query('page') page = '1',
+    @Query('search') search = '',
+    @Query('limit') limit = '50',
+  ) {
+    return this.adminMoviesService.list(Number(page) || 1, search, Number(limit) || 50);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.adminMoviesService.findOne(id);
   }
 
   @Post()
