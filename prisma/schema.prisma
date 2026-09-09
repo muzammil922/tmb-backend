@@ -41,6 +41,7 @@ enum ContentType {
 enum ContentSource {
   URDBOX
   MOVIESAPI
+  IMDB3
   TMDB_ONLY
   HOSTED
 }
@@ -238,7 +239,11 @@ model SyncSettings {
   id                String   @id @default("default")
   urduboxEnabled    Boolean  @default(false)
   moviesApiEnabled  Boolean  @default(false)
+  imdb3Enabled      Boolean  @default(true)
   automationEnabled Boolean  @default(false)
+  syncIntervalHours Int      @default(24)
+  lastScheduledSyncAt DateTime?
+  lastImdb3Id       Int      @default(123290)
   scheduleStart     String?
   scheduleEnd       String?
   cronExpression    String?

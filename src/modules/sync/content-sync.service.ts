@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
 import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
+import { Imdb3Client } from './clients/imdb3.client';
 import { autoCategorizeMovie } from '../admin/categories/category-helper';
 
 export type SyncAction = 'IMPORT' | 'SKIP';
@@ -34,6 +35,7 @@ export class ContentSyncService {
     private readonly tmdb: TmdbService,
     private readonly urdubox: UrduboxClient,
     private readonly moviesApi: MoviesApiClient,
+    private readonly imdb3: Imdb3Client,
   ) {}
 
   async checkContent(tmdbId: number, contentType: ContentType = ContentType.MOVIE): Promise<SyncDecision> {
@@ -316,6 +318,144 @@ export class ContentSyncService {
     } catch (error) {
       this.logger.error(`MoviesAPI series import failed for tmdbId ${tmdbId}`, error);
       if (jobId) await this.logEntry(jobId, tmdbId, null, null, 'FAILED', 'import_error', ContentType.SERIES);
+      throw error;
+    }
+  }
+
+  async importMovieFromImdb3(id: number | string, jobId?: string) {
+    const upstreamId = String(id).trim();
+
+    // Check if already imported
+    const existing = await this.prisma.movie.findFirst({
+      where: {
+        upstreamId,
+        contentSource: ContentSource.IMDB3,
+      },
+    });
+
+    if (existing) {
+      if (jobId) {
+        await this.logEntry(jobId, null, upstreamId, existing.title, 'SKIPPED', 'already_exists', ContentType.MOVIE);
+      }
+      return {
+        action: 'SKIP' as SyncAction,
+        reason: 'already_exists',
+        message: `Movie "${existing.title}" pehle se mojood hai`,
+        imported: false,
+        movie: existing,
+      };
+    }
+
+    try {
+      const item = await this.imdb3.getMovieById(upstreamId);
+      if (!item || !item.title) {
+        if (jobId) {
+          await this.logEntry(jobId, null, upstreamId, null, 'FAILED', 'not_found_on_upstream', ContentType.MOVIE);
+        }
+        return {
+          action: 'SKIP' as SyncAction,
+          reason: 'not_found',
+          message: `Movie ID ${upstreamId} IMDB3 par nahi mili`,
+          imported: false,
+        };
+      }
+
+      const titleClean = item.title.trim().replace(/\n/g, '');
+
+      // Check title duplicate
+      const duplicateTitle = await this.prisma.movie.findFirst({
+        where: { title: { equals: titleClean, mode: 'insensitive' } },
+      });
+      if (duplicateTitle) {
+        if (jobId) {
+          await this.logEntry(jobId, null, upstreamId, titleClean, 'SKIPPED', 'already_exists', ContentType.MOVIE);
+        }
+        return {
+          action: 'SKIP' as SyncAction,
+          reason: 'already_exists',
+          message: `Movie "${titleClean}" pehle se mojood hai`,
+          imported: false,
+          movie: duplicateTitle,
+        };
+      }
+
+      // Resolve stream URL
+      let streamUrl: string | null = null;
+      if (item.subjectid) {
+        streamUrl = await this.imdb3.resolveStreamUrl(item.subjectid);
+      }
+
+      let releaseDate: Date | null = null;
+      if (item.release_date) {
+        const parsed = new Date(item.release_date);
+        if (!isNaN(parsed.getTime())) releaseDate = parsed;
+      }
+
+      const voteAvg = item.vote_average ? parseFloat(item.vote_average) : null;
+      const durationSec = item.duration ? parseInt(item.duration, 10) : 0;
+      const runtimeMinutes = durationSec > 0 ? Math.round(durationSec / 60) : null;
+      const overviewClean = item.dis ? item.dis.replace(/^["']|["']$/g, '').trim() : '';
+
+      const movie = await this.prisma.movie.create({
+        data: {
+          title: titleClean,
+          overview: overviewClean || null,
+          posterPath: item.backdrop_path || null,
+          backdropPath: item.backdrop_path || null,
+          releaseDate,
+          runtime: runtimeMinutes,
+          rating: voteAvg,
+          language: item.country?.toLowerCase().includes('india') ? 'hi' : 'en',
+          videoUrl: streamUrl,
+          videoProvider: 'IMDB3_MOVIEBOX',
+          videoDuration: runtimeMinutes ? runtimeMinutes * 60 : null,
+          trailerKey: item.trailer || null,
+          status: MovieStatus.ACTIVE,
+          source: MovieSource.MANUAL,
+          contentSource: ContentSource.IMDB3,
+          playbackMode: PlaybackMode.HOSTED,
+          upstreamId,
+          upstreamSyncedAt: new Date(),
+        },
+      });
+
+      // Populate cast members if stafflist is available
+      if (Array.isArray(item.stafflist) && item.stafflist.length > 0) {
+        for (let i = 0; i < Math.min(item.stafflist.length, 10); i++) {
+          const staff = item.stafflist[i];
+          if (staff.name) {
+            await this.prisma.movieCast.create({
+              data: {
+                movieId: movie.id,
+                name: staff.name,
+                character: staff.character || null,
+                profilePath: staff.avatarUrl || null,
+                order: i,
+              },
+            });
+          }
+        }
+      }
+
+      // Auto-categorize movie into platform categories
+      await autoCategorizeMovie(this.prisma, movie.id);
+
+      if (jobId) {
+        await this.logEntry(jobId, null, upstreamId, movie.title, 'IMPORTED', 'new', ContentType.MOVIE);
+      }
+
+      return {
+        action: 'IMPORT' as SyncAction,
+        reason: 'new',
+        message: `Movie "${movie.title}" IMDB3 se import ho gayi`,
+        imported: true,
+        movie,
+      };
+    } catch (error: any) {
+      this.logger.error(`IMDB3 import failed for ID ${upstreamId}: ${error?.message || error}`);
+      if (jobId) {
+        await this.logEntry(jobId, null, upstreamId, null, 'FAILED', error?.message || 'import_error', ContentType.MOVIE);
+      }
       throw error;
     }
   }

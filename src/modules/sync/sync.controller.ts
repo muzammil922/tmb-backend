@@ -52,6 +52,17 @@ export class SyncController {
     return this.syncService.stopAutomation();
   }
 
+  @Post('imdb3/import/:id')
+  importImdb3Movie(@Param('id') id: string) {
+    return this.syncService.importSingleImdb3Movie(id);
+  }
+
+  @Post('imdb3/batch')
+  importImdb3Batch(@Body() body: { startId: number; count?: number }) {
+    if (!body?.startId) throw new BadRequestException('startId is required');
+    return this.syncService.importImdb3Batch(Number(body.startId), Number(body.count || 10));
+  }
+
   @Post('urdubox/browser/start')
   startBrowserUrdubox() {
     return this.syncService.startBrowserUrduboxJob();

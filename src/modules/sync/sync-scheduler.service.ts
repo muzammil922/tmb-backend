@@ -8,8 +8,8 @@ export class SyncSchedulerService {
 
   constructor(private readonly syncService: SyncService) {}
 
-  @Cron(CronExpression.EVERY_HOUR)
-  async handleHourlySync() {
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async handleScheduledSyncTick() {
     try {
       const result = await this.syncService.runScheduledSync();
       if ('skipped' in result && result.skipped) return;

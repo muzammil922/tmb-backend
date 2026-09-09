@@ -11,7 +11,21 @@ export class UpdateSyncSettingsDto {
 
   @IsOptional()
   @IsBoolean()
+  imdb3Enabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   automationEnabled?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(168)
+  syncIntervalHours?: number;
+
+  @IsOptional()
+  @IsInt()
+  lastImdb3Id?: number;
 
   @IsOptional()
   @IsString()

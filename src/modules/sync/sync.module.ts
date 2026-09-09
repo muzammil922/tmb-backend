@@ -5,6 +5,7 @@ import { CacheModule } from '../../common/cache/cache.module';
 import { TmdbModule } from '../tmdb/tmdb.module';
 import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
+import { Imdb3Client } from './clients/imdb3.client';
 import { ContentSyncService } from './content-sync.service';
 import { SyncService } from './sync.service';
 import { SyncSchedulerService } from './sync-scheduler.service';
@@ -19,6 +20,7 @@ import { StreamService } from './stream.service';
   providers: [
     UrduboxClient,
     MoviesApiClient,
+    Imdb3Client,
     ContentSyncService,
     SyncService,
     SyncSchedulerService,

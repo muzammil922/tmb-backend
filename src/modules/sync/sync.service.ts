@@ -6,8 +6,9 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ContentSyncService } from './content-sync.service';
 import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
+import { Imdb3Client } from './clients/imdb3.client';
 
-export type SyncRunSource = 'URDBOX' | 'MOVIESAPI' | 'ALL';
+export type SyncRunSource = 'URDBOX' | 'MOVIESAPI' | 'IMDB3' | 'ALL';
 
 @Injectable()
 export class SyncService {
@@ -21,6 +22,7 @@ export class SyncService {
     private readonly contentSync: ContentSyncService,
     private readonly urdubox: UrduboxClient,
     private readonly moviesApi: MoviesApiClient,
+    private readonly imdb3: Imdb3Client,
     private readonly cache: CacheService,
   ) {}
 
@@ -37,7 +39,11 @@ export class SyncService {
   async updateSettings(data: {
     urduboxEnabled?: boolean;
     moviesApiEnabled?: boolean;
+    imdb3Enabled?: boolean;
     automationEnabled?: boolean;
+    syncIntervalHours?: number;
+    lastScheduledSyncAt?: Date | null;
+    lastImdb3Id?: number;
     scheduleStart?: string | null;
     scheduleEnd?: string | null;
     cronExpression?: string | null;
@@ -81,24 +87,48 @@ export class SyncService {
   }
 
   async getStatus() {
-    const runningJobs = await this.prisma.syncJob.findMany({
-      where: { status: SyncStatus.RUNNING },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        source: true,
-        imported: true,
-        skipped: true,
-        failed: true,
-        startedAt: true,
-      },
-    });
+    const [runningJobs, settings] = await Promise.all([
+      this.prisma.syncJob.findMany({
+        where: { status: SyncStatus.RUNNING },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          source: true,
+          imported: true,
+          skipped: true,
+          failed: true,
+          startedAt: true,
+        },
+      }),
+      this.getSettings(),
+    ]);
+
+    let nextSyncRemainingMinutes: number | null = null;
+    if (settings.automationEnabled) {
+      const intervalMs = (settings.syncIntervalHours || 24) * 60 * 60 * 1000;
+      const last = settings.lastScheduledSyncAt ? new Date(settings.lastScheduledSyncAt).getTime() : 0;
+      const elapsed = Date.now() - last;
+      if (elapsed >= intervalMs) {
+        nextSyncRemainingMinutes = 0;
+      } else {
+        nextSyncRemainingMinutes = Math.max(1, Math.round((intervalMs - elapsed) / (1000 * 60)));
+      }
+    }
 
     return {
       running: this.running || runningJobs.length > 0,
       cancelRequested: this.cancelRequested,
       activeJobId: this.activeJobId,
       runningJobs,
+      automation: {
+        enabled: settings.automationEnabled,
+        syncIntervalHours: settings.syncIntervalHours || 24,
+        lastScheduledSyncAt: settings.lastScheduledSyncAt,
+        nextSyncRemainingMinutes,
+        urduboxEnabled: settings.urduboxEnabled,
+        moviesApiEnabled: settings.moviesApiEnabled,
+        imdb3Enabled: settings.imdb3Enabled,
+      },
     };
   }
 
@@ -186,6 +216,11 @@ export class SyncService {
           results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage));
         }
       }
+      if ((source === 'IMDB3' || source === 'ALL') && settings.imdb3Enabled) {
+        if (!this.cancelRequested) {
+          results.push(await this.runImdb3Sync(25));
+        }
+      }
       return { started: true, results, cancelled: this.cancelRequested };
     } finally {
       this.running = false;
@@ -268,9 +303,28 @@ export class SyncService {
   async runScheduledSync() {
     const settings = await this.getSettings();
     if (!settings.automationEnabled) return { skipped: true, reason: 'automation_disabled' };
+
+    // Check interval (e.g. 24 hours for 1 day, 48 hours for 2 days)
+    const intervalHours = settings.syncIntervalHours || 24;
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+    if (settings.lastScheduledSyncAt) {
+      const elapsed = Date.now() - new Date(settings.lastScheduledSyncAt).getTime();
+      if (elapsed < intervalMs) {
+        const remainingHours = ((intervalMs - elapsed) / (1000 * 60 * 60)).toFixed(1);
+        return { skipped: true, reason: 'interval_not_elapsed', remainingHours };
+      }
+    }
+
     if (!this.isWithinScheduleWindow(settings.scheduleStart, settings.scheduleEnd)) {
       return { skipped: true, reason: 'outside_schedule_window' };
     }
+
+    // Record lastScheduledSyncAt
+    await this.prisma.syncSettings.update({
+      where: { id: 'default' },
+      data: { lastScheduledSyncAt: new Date() },
+    });
+
     return this.runSync('ALL');
   }
 
@@ -489,6 +543,81 @@ export class SyncService {
       });
       throw error;
     }
+  }
+
+  private async runImdb3Sync(count = 25) {
+    const job = await this.prisma.syncJob.create({
+      data: { source: ContentSource.IMDB3, status: SyncStatus.RUNNING, startedAt: new Date() },
+    });
+    this.activeJobId = job.id;
+
+    let imported = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    try {
+      const settings = await this.getSettings();
+      const startId = settings.lastImdb3Id || 123290;
+      let highestScannedId = startId;
+
+      for (let i = 0; i < count; i++) {
+        if (this.shouldStop()) break;
+        const targetId = startId + i;
+        highestScannedId = targetId;
+
+        try {
+          const result = await this.contentSync.importMovieFromImdb3(targetId, job.id);
+          if (result.imported) imported++;
+          else skipped++;
+        } catch {
+          failed++;
+        }
+
+        await this.updateJobProgress(job.id, imported, skipped, failed);
+        await this.delay(300);
+      }
+
+      await this.prisma.syncSettings.update({
+        where: { id: 'default' },
+        data: { lastImdb3Id: highestScannedId + 1 },
+      });
+
+      if (this.shouldStop()) {
+        return this.stopJob(job.id, imported, skipped, failed);
+      }
+      return this.completeJob(job.id, imported, skipped, failed);
+    } catch (error: any) {
+      await this.prisma.syncJob.update({
+        where: { id: job.id },
+        data: {
+          status: SyncStatus.FAILED,
+          completedAt: new Date(),
+          errorMessage: error?.message ?? 'Unknown error',
+          imported,
+          skipped,
+          failed,
+        },
+      });
+      throw error;
+    }
+  }
+
+  async importSingleImdb3Movie(id: number | string) {
+    return this.contentSync.importMovieFromImdb3(id);
+  }
+
+  async importImdb3Batch(startId: number, count = 10) {
+    const results: any[] = [];
+    for (let i = 0; i < count; i++) {
+      const targetId = startId + i;
+      try {
+        const res = await this.contentSync.importMovieFromImdb3(targetId);
+        results.push({ id: targetId, ...res });
+      } catch (err: any) {
+        results.push({ id: targetId, action: 'FAIL', message: err?.message || 'failed' });
+      }
+    }
+    return results;
   }
 
   private async completeJob(
