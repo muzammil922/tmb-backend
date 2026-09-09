@@ -34,6 +34,11 @@ export class AdminCategoriesController {
     return this.categoriesService.remove(id);
   }
 
+  @Post('seed')
+  seedDefaults() {
+    return this.categoriesService.seedDefaults();
+  }
+
   @Post(':id/movies')
   setMovies(@Param('id') id: string, @Body('movieIds') movieIds: string[]) {
     return this.categoriesService.setMovies(id, movieIds);

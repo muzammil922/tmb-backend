@@ -101,6 +101,11 @@ export class HomepageService {
       }
     }
 
-    return { hero, sections: resolved };
+    const banners = await this.prisma.banner.findMany({
+      where: { isActive: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { hero, banners, sections: resolved };
   }
 }
