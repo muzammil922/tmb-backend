@@ -439,6 +439,15 @@ export class ContentSyncService {
       };
     }
 
+    if (movie.tmdbId) {
+      return {
+        mode: PlaybackMode.EMBED,
+        available: true,
+        source: ContentSource.MOVIESAPI,
+        playerUrl: this.moviesApi.buildMovieEmbedPath(movie.tmdbId),
+      };
+    }
+
     return {
       mode: null,
       available: false,

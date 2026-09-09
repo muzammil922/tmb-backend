@@ -179,6 +179,12 @@ export class MoviesService {
           profilePath: c.profile_path,
         })) ?? [],
         trailerKey: details.videos?.results?.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')?.key ?? null,
+        playback: {
+          mode: 'EMBED',
+          available: true,
+          source: 'STREAM',
+          playerUrl: `/api/player/embed/movie/${details.id}`,
+        },
       };
     }
     throw new NotFoundException('Movie not found');
