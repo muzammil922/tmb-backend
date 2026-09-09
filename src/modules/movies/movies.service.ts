@@ -203,21 +203,66 @@ export class MoviesService {
   }
 
   async getSimilar(id: string, page = 1) {
-    const tmdbId = Number(id);
-    if (!Number.isNaN(tmdbId)) {
-      const result: any = await this.tmdb.similar(tmdbId, page);
-      return {
-        data: result.results.map((m: any) => ({
-          id: String(m.id),
-          tmdbId: m.id,
-          title: m.title,
-          posterPath: m.poster_path,
-          rating: m.vote_average,
-        })),
-        page: result.page,
-        totalPages: result.total_pages,
-        totalResults: result.total_results,
-      };
+    // First try to find genre-based related movies from our own database
+    const movie = await this.prisma.movie.findUnique({
+      where: { id },
+      include: { genres: { include: { genre: true } } },
+    });
+
+    if (movie && movie.genres.length > 0) {
+      const genreIds = movie.genres.map((g) => g.genreId);
+      const skip = (page - 1) * 24;
+      const [related, total] = await Promise.all([
+        this.prisma.movie.findMany({
+          where: {
+            status: MovieStatus.ACTIVE,
+            id: { not: id },
+            genres: { some: { genreId: { in: genreIds } } },
+          },
+          include: this.movieInclude,
+          orderBy: { rating: 'desc' },
+          skip,
+          take: 24,
+        }),
+        this.prisma.movie.count({
+          where: {
+            status: MovieStatus.ACTIVE,
+            id: { not: id },
+            genres: { some: { genreId: { in: genreIds } } },
+          },
+        }),
+      ]);
+      if (related.length > 0) {
+        return {
+          data: related.map((m) => this.mapMovie(m)),
+          page,
+          totalPages: Math.ceil(total / 24) || 1,
+          totalResults: total,
+        };
+      }
+    }
+
+    // Fallback to TMDB similar if no DB results
+    const tmdbId = movie?.tmdbId ?? Number(id);
+    if (!Number.isNaN(tmdbId) && tmdbId > 0) {
+      try {
+        const result: any = await this.tmdb.similar(tmdbId, page);
+        return {
+          data: result.results.map((m: any) => ({
+            id: String(m.id),
+            tmdbId: m.id,
+            title: m.title,
+            posterPath: m.poster_path,
+            backdropPath: m.backdrop_path,
+            rating: m.vote_average,
+          })),
+          page: result.page,
+          totalPages: result.total_pages,
+          totalResults: result.total_results,
+        };
+      } catch {
+        // TMDB request failed, return empty
+      }
     }
     return { data: [], page: 1, totalPages: 1, totalResults: 0 };
   }
