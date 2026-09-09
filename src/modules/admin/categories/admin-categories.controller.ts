@@ -39,6 +39,11 @@ export class AdminCategoriesController {
     return this.categoriesService.seedDefaults();
   }
 
+  @Post('auto-categorize')
+  autoCategorizeAll() {
+    return this.categoriesService.autoCategorizeAll();
+  }
+
   @Post(':id/movies')
   setMovies(@Param('id') id: string, @Body('movieIds') movieIds: string[]) {
     return this.categoriesService.setMovies(id, movieIds);

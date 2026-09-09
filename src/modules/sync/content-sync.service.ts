@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
 import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
+import { autoCategorizeMovie } from '../admin/categories/category-helper';
 
 export type SyncAction = 'IMPORT' | 'SKIP';
 
@@ -380,6 +381,8 @@ export class ContentSyncService {
         })),
       });
     }
+
+    await autoCategorizeMovie(this.prisma, movieId);
   }
 
   private async logEntry(

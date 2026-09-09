@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { MovieSource, MovieStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TmdbService } from '../../tmdb/tmdb.service';
+import { autoCategorizeMovie } from '../categories/category-helper';
 
 @Injectable()
 export class AdminMoviesService {
@@ -58,6 +59,7 @@ export class AdminMoviesService {
         skipDuplicates: true,
       });
     }
+    await autoCategorizeMovie(this.prisma, movie.id);
     return movie;
   }
 
@@ -167,6 +169,8 @@ export class AdminMoviesService {
         })),
       });
     }
+
+    await autoCategorizeMovie(this.prisma, movie.id);
 
     return movie;
   }
