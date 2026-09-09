@@ -7,13 +7,31 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.setGlobalPrefix('api');
+  const allowedOrigins = [
+    process.env.WEBSITE_URL,
+    process.env.ADMIN_URL,
+    'https://flowlab.fun',
+    'https://www.flowlab.fun',
+    'https://api.flowlab.fun',
+    'https://admin.flowlab.fun',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://urdubox.pk',
+    'https://www.urdubox.pk',
+  ].filter(Boolean) as string[];
+
   app.enableCors({
-    origin: [
-      process.env.WEBSITE_URL || 'http://localhost:3000',
-      process.env.ADMIN_URL || 'http://localhost:5173',
-      'https://urdubox.pk',
-      'https://www.urdubox.pk',
-    ],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('flowlab.fun') ||
+        origin.includes('localhost')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Bridge-Token'],
   });
