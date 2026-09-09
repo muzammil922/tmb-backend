@@ -56,22 +56,23 @@ export class MoviesService {
     cast: true,
   } satisfies Prisma.MovieInclude;
 
-  async listFromDb(where: Prisma.MovieWhereInput, page = 1, limit = 20) {
-    const skip = (page - 1) * limit;
+  async listFromDb(where: Prisma.MovieWhereInput, page = 1, limit = 48) {
+    const safeLimit = Math.min(Math.max(limit, 1), 100); // cap between 1-100
+    const skip = (page - 1) * safeLimit;
     const [data, total] = await Promise.all([
       this.prisma.movie.findMany({
         where: { status: MovieStatus.ACTIVE, ...where },
         include: this.movieInclude,
         orderBy: { rating: 'desc' },
         skip,
-        take: limit,
+        take: safeLimit,
       }),
       this.prisma.movie.count({ where: { status: MovieStatus.ACTIVE, ...where } }),
     ]);
     return {
       data: data.map((m) => this.mapMovie(m)),
       page,
-      totalPages: Math.ceil(total / limit) || 1,
+      totalPages: Math.ceil(total / safeLimit) || 1,
       totalResults: total,
     };
   }
@@ -128,7 +129,7 @@ export class MoviesService {
     return mapped;
   }
 
-  async getList(type: string, page = 1) {
+  async getList(type: string, page = 1, limit = 48) {
     const dbCount = await this.prisma.movie.count({ where: { status: MovieStatus.ACTIVE } });
     if (dbCount >= 5) {
       const orderMap: Record<string, Prisma.MovieOrderByWithRelationInput> = {
@@ -138,7 +139,7 @@ export class MoviesService {
         upcoming: { releaseDate: 'asc' },
         'now-playing': { releaseDate: 'desc' },
       };
-      return this.listFromDb({}, page, 20);
+      return this.listFromDb({}, page, limit);
     }
     return this.listFromTmdb(type, page);
   }

@@ -8,28 +8,28 @@ export class MoviesController {
   constructor(private readonly moviesService: MoviesService) {}
 
   @Get('trending')
-  trending(@Query('page') page = '1') {
-    return this.moviesService.getList('trending', Number(page));
+  trending(@Query('page') page = '1', @Query('limit') limit = '48') {
+    return this.moviesService.getList('trending', Number(page), Number(limit));
   }
 
   @Get('popular')
-  popular(@Query('page') page = '1') {
-    return this.moviesService.getList('popular', Number(page));
+  popular(@Query('page') page = '1', @Query('limit') limit = '48') {
+    return this.moviesService.getList('popular', Number(page), Number(limit));
   }
 
   @Get('top-rated')
-  topRated(@Query('page') page = '1') {
-    return this.moviesService.getList('top-rated', Number(page));
+  topRated(@Query('page') page = '1', @Query('limit') limit = '48') {
+    return this.moviesService.getList('top-rated', Number(page), Number(limit));
   }
 
   @Get('upcoming')
-  upcoming(@Query('page') page = '1') {
-    return this.moviesService.getList('upcoming', Number(page));
+  upcoming(@Query('page') page = '1', @Query('limit') limit = '48') {
+    return this.moviesService.getList('upcoming', Number(page), Number(limit));
   }
 
   @Get('now-playing')
-  nowPlaying(@Query('page') page = '1') {
-    return this.moviesService.getList('now-playing', Number(page));
+  nowPlaying(@Query('page') page = '1', @Query('limit') limit = '48') {
+    return this.moviesService.getList('now-playing', Number(page), Number(limit));
   }
 
   @Get('genre/:genreId')
