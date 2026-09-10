@@ -26,6 +26,6 @@ import { StreamService } from './stream.service';
     SyncSchedulerService,
     StreamService,
   ],
-  exports: [ContentSyncService, SyncService],
+  exports: [ContentSyncService, SyncService, UrduboxClient, MoviesApiClient, Imdb3Client],
 })
 export class SyncModule {}

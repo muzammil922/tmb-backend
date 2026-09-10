@@ -12,6 +12,9 @@ export const DEFAULT_CATEGORIES = [
   { name: '👻 Horror & Suspense', slug: 'horror', description: 'Spooky thrills, paranormal, and psychological horror' },
   { name: '❤️ Romance & Love', slug: 'romance', description: 'Heartwarming romances and love stories' },
   { name: '⚡ Thriller & Suspense', slug: 'thriller', description: 'Edge-of-the-seat thrillers and tension' },
+  { name: '📺 Web Series & Shows', slug: 'web-series', description: 'Binge-worthy web series, drama serials, and TV shows with full episodes' },
+  { name: '⛩️ Anime Series & Movies', slug: 'anime', description: 'Top Japanese anime series, movies, and animated sagas' },
+  { name: '🌟 UrduBox Dramas', slug: 'urdubox-dramas', description: 'Popular Pakistani dramas and Turkish serials in Urdu' },
   { name: '🌟 UrduBox Exclusives', slug: 'urdubox', description: 'Exclusive Pakistani and Urdu dubbed releases' },
   { name: '🎬 Hindi Dubbed', slug: 'hindi-dubbed', description: 'Popular international movies dubbed in Hindi' },
   { name: '🍿 Hollywood Masterpieces', slug: 'hollywood', description: 'Critically acclaimed Hollywood masterworks' },
@@ -102,3 +105,85 @@ export async function autoCategorizeMovie(prisma: PrismaService, movieId: string
     }
   }
 }
+
+export async function autoCategorizeSeries(prisma: PrismaService, seriesId: string) {
+  const series = await prisma.series.findUnique({
+    where: { id: seriesId },
+    include: {
+      genres: { include: { genre: true } },
+    },
+  });
+
+  if (!series) return;
+
+  const matchedSlugs = new Set<string>();
+  matchedSlugs.add('web-series');
+
+  const genreNames = series.genres?.map((g) => g.genre.name.toLowerCase()) || [];
+  const titleLower = series.title.toLowerCase();
+  const overviewLower = (series.overview || '').toLowerCase();
+
+  // Anime detection
+  if (
+    series.language === 'ja' ||
+    series.contentType === 'ANIME' ||
+    titleLower.includes('anime') ||
+    overviewLower.includes('anime') ||
+    (genreNames.some((g) => g.includes('animation')) && (series.language === 'ja' || titleLower.includes('naruto') || titleLower.includes('titan') || titleLower.includes('dragon') || titleLower.includes('jujutsu') || titleLower.includes('slayer')))
+  ) {
+    matchedSlugs.add('anime');
+    matchedSlugs.add('animation');
+  }
+
+  // Genre mappings
+  if (genreNames.some((g) => g.includes('action'))) matchedSlugs.add('action');
+  if (genreNames.some((g) => g.includes('sci-fi') || g.includes('science fiction'))) matchedSlugs.add('sci-fi');
+  if (genreNames.some((g) => g.includes('drama'))) matchedSlugs.add('drama');
+  if (genreNames.some((g) => g.includes('comedy'))) matchedSlugs.add('comedy');
+  if (genreNames.some((g) => g.includes('crime') || g.includes('mystery'))) matchedSlugs.add('crime');
+  if (genreNames.some((g) => g.includes('adventure'))) matchedSlugs.add('adventure');
+  if (genreNames.some((g) => g.includes('animation') || g.includes('family'))) matchedSlugs.add('animation');
+  if (genreNames.some((g) => g.includes('horror'))) matchedSlugs.add('horror');
+  if (genreNames.some((g) => g.includes('romance'))) matchedSlugs.add('romance');
+  if (genreNames.some((g) => g.includes('thriller'))) matchedSlugs.add('thriller');
+
+  // UrduBox dramas
+  if (
+    series.contentSource === 'URDBOX' ||
+    series.playbackMode === 'URDBOX' ||
+    titleLower.includes('urdu') ||
+    overviewLower.includes('urdu')
+  ) {
+    matchedSlugs.add('urdubox');
+    matchedSlugs.add('urdubox-dramas');
+  }
+
+  if (series.language === 'hi' || titleLower.includes('hindi') || titleLower.includes('dubbed')) {
+    matchedSlugs.add('hindi-dubbed');
+  }
+
+  if (series.rating && series.rating >= 7.0) {
+    matchedSlugs.add('trending');
+  }
+
+  // Link series to matched categories
+  for (const slug of matchedSlugs) {
+    const category = await prisma.category.findUnique({ where: { slug } });
+    if (category) {
+      await prisma.categorySeries.upsert({
+        where: {
+          categoryId_seriesId: {
+            categoryId: category.id,
+            seriesId: series.id,
+          },
+        },
+        update: {},
+        create: {
+          categoryId: category.id,
+          seriesId: series.id,
+        },
+      });
+    }
+  }
+}
+

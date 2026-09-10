@@ -36,6 +36,7 @@ enum SectionMode {
 enum ContentType {
   MOVIE
   SERIES
+  ANIME
 }
 
 enum ContentSource {
@@ -119,6 +120,7 @@ model Genre {
   name   String @unique
 
   movies MovieGenre[]
+  series SeriesGenre[]
 }
 
 model MovieGenre {
@@ -222,6 +224,7 @@ model Category {
   updatedAt   DateTime @updatedAt
 
   movies CategoryMovie[]
+  series CategorySeries[]
 }
 
 model CategoryMovie {
@@ -233,6 +236,17 @@ model CategoryMovie {
   movie      Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
 
   @@unique([categoryId, movieId])
+}
+
+model CategorySeries {
+  id         String @id @default(cuid())
+  categoryId String
+  seriesId   String
+  order      Int    @default(0)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  series     Series   @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, seriesId])
 }
 
 model SyncSettings {
@@ -290,15 +304,77 @@ model Series {
   backdropPath     String?
   firstAirDate     DateTime?
   lastAirDate      DateTime?
-  numberOfSeasons  Int?
-  numberOfEpisodes Int?
+  numberOfSeasons  Int?           @default(1)
+  numberOfEpisodes Int?           @default(1)
   rating           Float?
   voteCount        Int?
   language         String?
-  status           MovieStatus    @default(DRAFT)
+  status           MovieStatus    @default(ACTIVE)
+  contentType      ContentType    @default(SERIES)
   contentSource    ContentSource?
   playbackMode     PlaybackMode?
   upstreamSyncedAt DateTime?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
+
+  seasons          Season[]
+  episodes         Episode[]
+  categorySeries   CategorySeries[]
+  genres           SeriesGenre[]
+  cast             SeriesCast[]
+}
+
+model Season {
+  id           String    @id @default(cuid())
+  seriesId     String
+  seasonNumber Int
+  name         String?
+  overview     String?
+  posterPath   String?
+  episodeCount Int       @default(0)
+  series       Series    @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  episodes     Episode[]
+
+  @@unique([seriesId, seasonNumber])
+}
+
+model Episode {
+  id            String    @id @default(cuid())
+  seriesId      String
+  seasonId      String
+  seasonNumber  Int
+  episodeNumber Int
+  title         String
+  overview      String?
+  stillPath     String?
+  airDate       DateTime?
+  runtime       Int?
+  voteAverage   Float?
+  videoUrl      String?
+  videoProvider String?
+  upstreamId    String?
+  series        Series    @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  season        Season    @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  @@unique([seasonId, episodeNumber])
+}
+
+model SeriesGenre {
+  seriesId String
+  genreId  String
+  series   Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  genre    Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([seriesId, genreId])
+}
+
+model SeriesCast {
+  id           String  @id @default(cuid())
+  seriesId     String
+  tmdbPersonId Int?
+  name         String
+  character    String?
+  profilePath  String?
+  order        Int     @default(0)
+  series       Series  @relation(fields: [seriesId], references: [id], onDelete: Cascade)
 }

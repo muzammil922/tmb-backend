@@ -13,7 +13,7 @@ import { TmdbService } from '../tmdb/tmdb.service';
 import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
 import { Imdb3Client } from './clients/imdb3.client';
-import { autoCategorizeMovie } from '../admin/categories/category-helper';
+import { autoCategorizeMovie, autoCategorizeSeries } from '../admin/categories/category-helper';
 
 export type SyncAction = 'IMPORT' | 'SKIP';
 
@@ -199,6 +199,12 @@ export class ContentSyncService {
         },
       });
 
+      await this.syncSeriesRelations(series.id, details);
+      if (resolvedUpstreamId) {
+        await this.syncUrduboxSeriesEpisodes(series.id, resolvedUpstreamId);
+      }
+      await autoCategorizeSeries(this.prisma, series.id);
+
       if (jobId) {
         await this.logEntry(jobId, tmdbId, resolvedUpstreamId, series.title, 'IMPORTED', 'new', ContentType.SERIES);
       }
@@ -303,6 +309,10 @@ export class ContentSyncService {
           upstreamSyncedAt: new Date(),
         },
       });
+
+      await this.syncSeriesRelations(series.id, details);
+      await this.syncTmdbSeriesEpisodes(series.id, tmdbId, details);
+      await autoCategorizeSeries(this.prisma, series.id);
 
       if (jobId) {
         await this.logEntry(jobId, tmdbId, null, series.title, 'IMPORTED', 'new', ContentType.SERIES);
@@ -523,6 +533,127 @@ export class ContentSyncService {
     }
 
     await autoCategorizeMovie(this.prisma, movieId);
+  }
+
+  private async syncSeriesRelations(seriesId: string, details: any) {
+    if (details.genres?.length) {
+      for (const g of details.genres) {
+        const genre = await this.prisma.genre.upsert({
+          where: { tmdbId: g.id },
+          update: { name: g.name },
+          create: { tmdbId: g.id, name: g.name },
+        });
+        await this.prisma.seriesGenre.upsert({
+          where: { seriesId_genreId: { seriesId, genreId: genre.id } },
+          update: {},
+          create: { seriesId, genreId: genre.id },
+        });
+      }
+    }
+
+    if (details.credits?.cast?.length) {
+      await this.prisma.seriesCast.deleteMany({ where: { seriesId } });
+      await this.prisma.seriesCast.createMany({
+        data: details.credits.cast.slice(0, 20).map((c: any, index: number) => ({
+          seriesId,
+          tmdbPersonId: c.id,
+          name: c.name,
+          character: c.character,
+          profilePath: c.profile_path,
+          order: index,
+        })),
+      });
+    }
+  }
+
+  private async syncUrduboxSeriesEpisodes(seriesId: string, upstreamId: string) {
+    try {
+      const urduboxData = await this.urdubox.getSeriesPublic(upstreamId);
+      const seasons = urduboxData?.seasons ?? urduboxData?.data?.seasons ?? [];
+
+      for (const s of seasons) {
+        const seasonNum = Number(s.seasonNumber ?? s.season ?? s.number ?? 1);
+        const episodes = s.episodes ?? s.items ?? [];
+
+        const season = await this.prisma.season.upsert({
+          where: { seriesId_seasonNumber: { seriesId, seasonNumber: seasonNum } },
+          update: {
+            name: s.name || `Season ${seasonNum}`,
+            episodeCount: episodes.length,
+          },
+          create: {
+            seriesId,
+            seasonNumber: seasonNum,
+            name: s.name || `Season ${seasonNum}`,
+            episodeCount: episodes.length,
+          },
+        });
+
+        for (const ep of episodes) {
+          const epNum = Number(ep.episodeNumber ?? ep.episode ?? ep.number ?? 1);
+          const streamLink = this.urdubox.extractEpisodeStreamLink(urduboxData, seasonNum, epNum);
+
+          await this.prisma.episode.upsert({
+            where: { seasonId_episodeNumber: { seasonId: season.id, episodeNumber: epNum } },
+            update: {
+              title: ep.title || ep.name || `Episode ${epNum}`,
+              videoUrl: streamLink?.url || null,
+              upstreamId: ep.id || ep._id || null,
+            },
+            create: {
+              seriesId,
+              seasonId: season.id,
+              seasonNumber: seasonNum,
+              episodeNumber: epNum,
+              title: ep.title || ep.name || `Episode ${epNum}`,
+              overview: ep.overview || null,
+              stillPath: ep.stillPath || ep.posterPath || null,
+              videoUrl: streamLink?.url || null,
+              upstreamId: ep.id || ep._id || null,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to sync episodes from UrduBox for series ${seriesId}: ${err}`);
+    }
+  }
+
+  private async syncTmdbSeriesEpisodes(seriesId: string, tmdbId: number, details: any) {
+    try {
+      const totalSeasons = details.number_of_seasons || 1;
+      for (let sNum = 1; sNum <= Math.min(totalSeasons, 10); sNum++) {
+        const season = await this.prisma.season.upsert({
+          where: { seriesId_seasonNumber: { seriesId, seasonNumber: sNum } },
+          update: {},
+          create: {
+            seriesId,
+            seasonNumber: sNum,
+            name: `Season ${sNum}`,
+            episodeCount: Math.min(details.number_of_episodes || 12, 24),
+          },
+        });
+
+        const epCount = Math.min(Math.round((details.number_of_episodes || 12) / totalSeasons) || 10, 24);
+        for (let epNum = 1; epNum <= epCount; epNum++) {
+          await this.prisma.episode.upsert({
+            where: { seasonId_episodeNumber: { seasonId: season.id, episodeNumber: epNum } },
+            update: {},
+            create: {
+              seriesId,
+              seasonId: season.id,
+              seasonNumber: sNum,
+              episodeNumber: epNum,
+              title: `Episode ${epNum}`,
+              overview: `Season ${sNum}, Episode ${epNum} of ${details.name || 'Series'}`,
+              stillPath: details.backdrop_path,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to sync TMDB episodes for series ${seriesId}: ${err}`);
+    }
   }
 
   private async logEntry(

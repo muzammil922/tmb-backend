@@ -19,6 +19,7 @@ import { AdminCategoriesModule } from './modules/admin/categories/admin-categori
 import { AdminUsersModule } from './modules/admin/users/admin-users.module';
 import { MediaModule } from './modules/media/media.module';
 import { SyncModule } from './modules/sync/sync.module';
+import { SeriesModule } from './modules/series/series.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { AppController } from './app.controller';
     AuthModule,
     TmdbModule,
     MoviesModule,
+    SeriesModule,
     GenresModule,
     SearchModule,
     HomepageModule,
