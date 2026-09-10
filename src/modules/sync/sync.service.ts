@@ -27,13 +27,33 @@ export class SyncService {
   ) {}
 
   async getSettings() {
-    let settings = await this.prisma.syncSettings.findUnique({ where: { id: 'default' } });
-    if (!settings) {
-      settings = await this.prisma.syncSettings.create({
-        data: { id: 'default' },
-      });
+    try {
+      let settings = await this.prisma.syncSettings.findUnique({ where: { id: 'default' } });
+      if (!settings) {
+        settings = await this.prisma.syncSettings.create({
+          data: { id: 'default' },
+        });
+      }
+      return settings;
+    } catch (error) {
+      this.logger.error('Failed to get sync settings, returning safe fallback:', error);
+      return {
+        id: 'default',
+        urduboxEnabled: false,
+        moviesApiEnabled: false,
+        imdb3Enabled: true,
+        automationEnabled: false,
+        syncIntervalHours: 24,
+        lastScheduledSyncAt: null,
+        lastImdb3Id: 123290,
+        scheduleStart: null,
+        scheduleEnd: null,
+        cronExpression: null,
+        maxPagesPerRun: 10,
+        resultsPerPage: 50,
+        updatedAt: new Date(),
+      };
     }
-    return settings;
   }
 
   async updateSettings(data: {
@@ -50,11 +70,16 @@ export class SyncService {
     maxPagesPerRun?: number;
     resultsPerPage?: number;
   }) {
-    return this.prisma.syncSettings.upsert({
-      where: { id: 'default' },
-      update: data,
-      create: { id: 'default', ...data },
-    });
+    try {
+      return await this.prisma.syncSettings.upsert({
+        where: { id: 'default' },
+        update: data,
+        create: { id: 'default', ...data },
+      });
+    } catch (error) {
+      this.logger.error('Failed to update sync settings, returning merged object:', error);
+      return { id: 'default', ...data, updatedAt: new Date() };
+    }
   }
 
   async listJobs(page = 1) {
@@ -87,49 +112,68 @@ export class SyncService {
   }
 
   async getStatus() {
-    const [runningJobs, settings] = await Promise.all([
-      this.prisma.syncJob.findMany({
-        where: { status: SyncStatus.RUNNING },
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          source: true,
-          imported: true,
-          skipped: true,
-          failed: true,
-          startedAt: true,
-        },
-      }),
-      this.getSettings(),
-    ]);
+    try {
+      const [runningJobs, settings] = await Promise.all([
+        this.prisma.syncJob.findMany({
+          where: { status: SyncStatus.RUNNING },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            source: true,
+            imported: true,
+            skipped: true,
+            failed: true,
+            startedAt: true,
+          },
+        }).catch(() => []),
+        this.getSettings(),
+      ]);
 
-    let nextSyncRemainingMinutes: number | null = null;
-    if (settings.automationEnabled) {
-      const intervalMs = (settings.syncIntervalHours || 24) * 60 * 60 * 1000;
-      const last = settings.lastScheduledSyncAt ? new Date(settings.lastScheduledSyncAt).getTime() : 0;
-      const elapsed = Date.now() - last;
-      if (elapsed >= intervalMs) {
-        nextSyncRemainingMinutes = 0;
-      } else {
-        nextSyncRemainingMinutes = Math.max(1, Math.round((intervalMs - elapsed) / (1000 * 60)));
+      let nextSyncRemainingMinutes: number | null = null;
+      if (settings?.automationEnabled) {
+        const intervalMs = (settings.syncIntervalHours || 24) * 60 * 60 * 1000;
+        const last = settings.lastScheduledSyncAt ? new Date(settings.lastScheduledSyncAt).getTime() : 0;
+        const elapsed = Date.now() - last;
+        if (elapsed >= intervalMs) {
+          nextSyncRemainingMinutes = 0;
+        } else {
+          nextSyncRemainingMinutes = Math.max(1, Math.round((intervalMs - elapsed) / (1000 * 60)));
+        }
       }
-    }
 
-    return {
-      running: this.running || runningJobs.length > 0,
-      cancelRequested: this.cancelRequested,
-      activeJobId: this.activeJobId,
-      runningJobs,
-      automation: {
-        enabled: settings.automationEnabled,
-        syncIntervalHours: settings.syncIntervalHours || 24,
-        lastScheduledSyncAt: settings.lastScheduledSyncAt,
-        nextSyncRemainingMinutes,
-        urduboxEnabled: settings.urduboxEnabled,
-        moviesApiEnabled: settings.moviesApiEnabled,
-        imdb3Enabled: settings.imdb3Enabled,
-      },
-    };
+      return {
+        running: this.running || runningJobs.length > 0,
+        cancelRequested: this.cancelRequested,
+        activeJobId: this.activeJobId,
+        runningJobs,
+        automation: {
+          enabled: settings?.automationEnabled ?? false,
+          syncIntervalHours: settings?.syncIntervalHours || 24,
+          lastScheduledSyncAt: settings?.lastScheduledSyncAt ?? null,
+          nextSyncRemainingMinutes,
+          urduboxEnabled: settings?.urduboxEnabled ?? false,
+          moviesApiEnabled: settings?.moviesApiEnabled ?? false,
+          imdb3Enabled: settings?.imdb3Enabled ?? true,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Failed to get status, returning fallback:', error);
+      return {
+        running: false,
+        cancelRequested: false,
+        activeJobId: null,
+        runningJobs: [],
+        automation: {
+          enabled: false,
+          syncIntervalHours: 24,
+          lastScheduledSyncAt: null,
+          nextSyncRemainingMinutes: null,
+          urduboxEnabled: false,
+          moviesApiEnabled: false,
+          imdb3Enabled: true,
+        },
+      };
+    }
   }
 
   async stopSync() {

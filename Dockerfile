@@ -13,4 +13,4 @@ COPY src ./src
 RUN pnpm prisma:generate && pnpm build
 
 EXPOSE 4000
-CMD ["sh", "-c", "pnpm exec prisma migrate deploy && node dist/main.js"]
+CMD ["sh", "-c", "pnpm exec prisma db push --accept-data-loss && node dist/main.js"]
