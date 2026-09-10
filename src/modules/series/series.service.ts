@@ -11,6 +11,8 @@ export interface SeriesFilterQuery {
   category?: string;
   search?: string;
   type?: 'ALL' | 'SERIES' | 'ANIME';
+  status?: string;
+  source?: string;
   page?: number;
   limit?: number;
 }
@@ -33,9 +35,22 @@ export class SeriesService {
     const limit = Math.min(Math.max(1, Number(query.limit || 24)), 100);
     const skip = (page - 1) * limit;
 
-    const where: Prisma.SeriesWhereInput = {
-      status: MovieStatus.ACTIVE,
-    };
+    const where: Prisma.SeriesWhereInput = {};
+
+    if (query.status && query.status !== 'all') {
+      if (query.status === 'live' || query.status === 'ACTIVE') {
+        where.status = MovieStatus.ACTIVE;
+      } else if (query.status === 'draft' || query.status === 'DRAFT') {
+        where.status = MovieStatus.DRAFT;
+      }
+    }
+
+    if (query.source && query.source !== 'all') {
+      const srcUpper = query.source.toUpperCase();
+      if (srcUpper in ContentSource) {
+        where.contentSource = srcUpper as ContentSource;
+      }
+    }
 
     if (query.type === 'ANIME') {
       where.contentType = ContentType.ANIME;
@@ -385,4 +400,18 @@ export class SeriesService {
       this.logger.warn(`Failed to auto-populate episodes for series ${seriesId}: ${error}`);
     }
   }
+
+  async deleteSeries(id: string) {
+    return this.prisma.series.delete({
+      where: { id },
+    });
+  }
+
+  async updateSeries(id: string, data: Partial<{ status: MovieStatus; title: string; overview: string; contentType: ContentType }>) {
+    return this.prisma.series.update({
+      where: { id },
+      data,
+    });
+  }
 }
+

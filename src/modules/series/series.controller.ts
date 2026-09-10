@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { SeriesService } from './series.service';
 
@@ -12,6 +12,8 @@ export class SeriesController {
     @Query('category') category?: string,
     @Query('search') search?: string,
     @Query('type') type?: 'ALL' | 'SERIES' | 'ANIME',
+    @Query('status') status?: string,
+    @Query('source') source?: string,
     @Query('page') page = '1',
     @Query('limit') limit = '24',
   ) {
@@ -19,6 +21,8 @@ export class SeriesController {
       category,
       search,
       type,
+      status,
+      source,
       page: Number(page),
       limit: Number(limit),
     });
@@ -37,4 +41,15 @@ export class SeriesController {
   ) {
     return this.seriesService.getEpisodePlayback(id, Number(season), Number(episode));
   }
+
+  @Patch(':id')
+  updateSeries(@Param('id') id: string, @Body() body: any) {
+    return this.seriesService.updateSeries(id, body);
+  }
+
+  @Delete(':id')
+  deleteSeries(@Param('id') id: string) {
+    return this.seriesService.deleteSeries(id);
+  }
 }
+
