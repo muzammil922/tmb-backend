@@ -34,12 +34,17 @@ export class SyncController {
 
   @Post('run')
   runSync(@Body() body: RunSyncDto) {
-    return this.syncService.runSync(body.source ?? 'ALL');
+    return this.syncService.runSync(body.source ?? 'ALL', body.contentType ?? 'ALL');
   }
 
   @Get('status')
   getStatus() {
     return this.syncService.getStatus();
+  }
+
+  @Post('reset-stalled')
+  resetStalled() {
+    return this.syncService.resetStalledJobs();
   }
 
   @Post('stop')

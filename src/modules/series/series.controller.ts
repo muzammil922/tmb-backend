@@ -42,6 +42,16 @@ export class SeriesController {
     return this.seriesService.getEpisodePlayback(id, Number(season), Number(episode));
   }
 
+  @Patch('bulk/status')
+  bulkUpdateStatus(@Body() body: any) {
+    return this.seriesService.bulkUpdateStatus(body);
+  }
+
+  @Delete('bulk/delete')
+  bulkDelete(@Body() body: any) {
+    return this.seriesService.bulkDelete(body);
+  }
+
   @Patch(':id')
   updateSeries(@Param('id') id: string, @Body() body: any) {
     return this.seriesService.updateSeries(id, body);

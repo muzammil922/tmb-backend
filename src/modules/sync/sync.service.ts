@@ -9,6 +9,7 @@ import { MoviesApiClient } from './clients/movies-api.client';
 import { Imdb3Client } from './clients/imdb3.client';
 
 export type SyncRunSource = 'URDBOX' | 'MOVIESAPI' | 'IMDB3' | 'ALL';
+export type SyncContentType = 'ALL' | 'MOVIES' | 'SERIES';
 
 @Injectable()
 export class SyncService {
@@ -238,7 +239,23 @@ export class SyncService {
     };
   }
 
-  async runSync(source: SyncRunSource = 'ALL') {
+  async resetStalledJobs() {
+    this.running = false;
+    this.cancelRequested = false;
+    this.activeJobId = null;
+    const result = await this.prisma.syncJob.updateMany({
+      where: { status: SyncStatus.RUNNING },
+      data: {
+        status: SyncStatus.COMPLETED,
+        completedAt: new Date(),
+        errorMessage: 'Cleared / reset by admin',
+      },
+    });
+    this.logger.log(`Reset ${result.count} stalled sync jobs.`);
+    return { success: true, count: result.count, message: `Reset ${result.count} stalled sync jobs.` };
+  }
+
+  async runSync(source: SyncRunSource = 'ALL', contentType: SyncContentType = 'ALL') {
     if (this.running) {
       return { message: 'Sync already running', started: false };
     }
@@ -252,15 +269,15 @@ export class SyncService {
     try {
       if ((source === 'URDBOX' || source === 'ALL') && settings.urduboxEnabled) {
         if (!this.cancelRequested) {
-          results.push(await this.runUrduboxSync(settings.maxPagesPerRun, settings.resultsPerPage));
+          results.push(await this.runUrduboxSync(settings.maxPagesPerRun, settings.resultsPerPage, contentType));
         }
       }
       if ((source === 'MOVIESAPI' || source === 'ALL') && settings.moviesApiEnabled) {
         if (!this.cancelRequested) {
-          results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage));
+          results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage, contentType));
         }
       }
-      if ((source === 'IMDB3' || source === 'ALL') && settings.imdb3Enabled) {
+      if ((source === 'IMDB3' || source === 'ALL') && settings.imdb3Enabled && contentType !== 'SERIES') {
         if (!this.cancelRequested) {
           results.push(await this.runImdb3Sync(25));
         }
@@ -388,7 +405,7 @@ export class SyncService {
     return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
   }
 
-  private async runUrduboxSync(maxPages: number, resultsPerPage: number) {
+  private async runUrduboxSync(maxPages: number, resultsPerPage: number, contentType: SyncContentType = 'ALL') {
     const job = await this.prisma.syncJob.create({
       data: { source: ContentSource.URDBOX, status: SyncStatus.RUNNING, startedAt: new Date() },
     });
@@ -400,75 +417,79 @@ export class SyncService {
     let blockedByUpstream = false;
 
     try {
-      for (let page = 1; page <= maxPages; page++) {
-        if (this.shouldStop()) break;
-        const response = await this.urdubox.discoverMovies(page, resultsPerPage);
-        const items = this.urdubox.extractItems(response);
-        if (!items.length) {
-          if (page === 1 && this.urdubox.wasLastRequestBlocked()) {
-            blockedByUpstream = true;
-          }
-          break;
-        }
-
-        for (const item of items) {
+      if (contentType === 'ALL' || contentType === 'MOVIES') {
+        for (let page = 1; page <= maxPages; page++) {
           if (this.shouldStop()) break;
-          const tmdbId = this.urdubox.resolveTmdbId(item);
-          if (!tmdbId) {
-            failed++;
+          const response = await this.urdubox.discoverMovies(page, resultsPerPage);
+          const items = this.urdubox.extractItems(response);
+          if (!items.length) {
+            if (page === 1 && this.urdubox.wasLastRequestBlocked()) {
+              blockedByUpstream = true;
+            }
+            break;
+          }
+
+          for (const item of items) {
+            if (this.shouldStop()) break;
+            const tmdbId = this.urdubox.resolveTmdbId(item);
+            if (!tmdbId) {
+              failed++;
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              continue;
+            }
+
+            try {
+              const result = await this.contentSync.importMovieFromUrdubox(
+                tmdbId,
+                this.urdubox.resolveUpstreamId(item),
+                job.id,
+              );
+              if (result.imported) imported++;
+              else skipped++;
+            } catch {
+              failed++;
+            }
             await this.updateJobProgress(job.id, imported, skipped, failed);
-            continue;
           }
 
-          try {
-            const result = await this.contentSync.importMovieFromUrdubox(
-              tmdbId,
-              this.urdubox.resolveUpstreamId(item),
-              job.id,
-            );
-            if (result.imported) imported++;
-            else skipped++;
-          } catch {
-            failed++;
-          }
-          await this.updateJobProgress(job.id, imported, skipped, failed);
+          if (items.length < resultsPerPage) break;
+          await this.delay(500);
         }
-
-        if (items.length < resultsPerPage) break;
-        await this.delay(500);
       }
 
-      for (let page = 1; page <= maxPages; page++) {
-        if (this.shouldStop()) break;
-        const response = await this.urdubox.discoverTv(page, resultsPerPage);
-        const items = this.urdubox.extractItems(response);
-        if (!items.length) break;
-
-        for (const item of items) {
+      if (contentType === 'ALL' || contentType === 'SERIES') {
+        for (let page = 1; page <= maxPages; page++) {
           if (this.shouldStop()) break;
-          const tmdbId = this.urdubox.resolveTmdbId(item);
-          if (!tmdbId) {
-            failed++;
+          const response = await this.urdubox.discoverTv(page, resultsPerPage);
+          const items = this.urdubox.extractItems(response);
+          if (!items.length) break;
+
+          for (const item of items) {
+            if (this.shouldStop()) break;
+            const tmdbId = this.urdubox.resolveTmdbId(item);
+            if (!tmdbId) {
+              failed++;
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              continue;
+            }
+
+            try {
+              const result = await this.contentSync.importSeriesFromUrdubox(
+                tmdbId,
+                this.urdubox.resolveUpstreamId(item),
+                job.id,
+              );
+              if (result.imported) imported++;
+              else skipped++;
+            } catch {
+              failed++;
+            }
             await this.updateJobProgress(job.id, imported, skipped, failed);
-            continue;
           }
 
-          try {
-            const result = await this.contentSync.importSeriesFromUrdubox(
-              tmdbId,
-              this.urdubox.resolveUpstreamId(item),
-              job.id,
-            );
-            if (result.imported) imported++;
-            else skipped++;
-          } catch {
-            failed++;
-          }
-          await this.updateJobProgress(job.id, imported, skipped, failed);
+          if (items.length < resultsPerPage) break;
+          await this.delay(500);
         }
-
-        if (items.length < resultsPerPage) break;
-        await this.delay(500);
       }
 
       if (this.shouldStop()) {
@@ -500,7 +521,7 @@ export class SyncService {
     }
   }
 
-  private async runMoviesApiSync(maxPages: number, resultsPerPage: number) {
+  private async runMoviesApiSync(maxPages: number, resultsPerPage: number, contentType: SyncContentType = 'ALL') {
     const job = await this.prisma.syncJob.create({
       data: { source: ContentSource.MOVIESAPI, status: SyncStatus.RUNNING, startedAt: new Date() },
     });
@@ -511,62 +532,66 @@ export class SyncService {
     let failed = 0;
 
     try {
-      for (let page = 1; page <= maxPages; page++) {
-        if (this.shouldStop()) break;
-        const response = await this.moviesApi.discoverMovies(page, resultsPerPage);
-        const items = this.moviesApi.extractItems(response);
-        if (!items.length) break;
-
-        for (const item of items) {
+      if (contentType === 'ALL' || contentType === 'MOVIES') {
+        for (let page = 1; page <= maxPages; page++) {
           if (this.shouldStop()) break;
-          const tmdbId = this.moviesApi.resolveTmdbId(item);
-          if (!tmdbId) {
-            failed++;
+          const response = await this.moviesApi.discoverMovies(page, resultsPerPage);
+          const items = this.moviesApi.extractItems(response);
+          if (!items.length) break;
+
+          for (const item of items) {
+            if (this.shouldStop()) break;
+            const tmdbId = this.moviesApi.resolveTmdbId(item);
+            if (!tmdbId) {
+              failed++;
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              continue;
+            }
+
+            try {
+              const result = await this.contentSync.importMovieFromMoviesApi(tmdbId, job.id);
+              if (result.imported) imported++;
+              else skipped++;
+            } catch {
+              failed++;
+            }
             await this.updateJobProgress(job.id, imported, skipped, failed);
-            continue;
           }
 
-          try {
-            const result = await this.contentSync.importMovieFromMoviesApi(tmdbId, job.id);
-            if (result.imported) imported++;
-            else skipped++;
-          } catch {
-            failed++;
-          }
-          await this.updateJobProgress(job.id, imported, skipped, failed);
+          if (items.length < resultsPerPage) break;
+          await this.delay(500);
         }
-
-        if (items.length < resultsPerPage) break;
-        await this.delay(500);
       }
 
-      for (let page = 1; page <= maxPages; page++) {
-        if (this.shouldStop()) break;
-        const response = await this.moviesApi.discoverTv(page, resultsPerPage);
-        const items = this.moviesApi.extractItems(response);
-        if (!items.length) break;
-
-        for (const item of items) {
+      if (contentType === 'ALL' || contentType === 'SERIES') {
+        for (let page = 1; page <= maxPages; page++) {
           if (this.shouldStop()) break;
-          const tmdbId = this.moviesApi.resolveTmdbId(item);
-          if (!tmdbId) {
-            failed++;
+          const response = await this.moviesApi.discoverTv(page, resultsPerPage);
+          const items = this.moviesApi.extractItems(response);
+          if (!items.length) break;
+
+          for (const item of items) {
+            if (this.shouldStop()) break;
+            const tmdbId = this.moviesApi.resolveTmdbId(item);
+            if (!tmdbId) {
+              failed++;
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              continue;
+            }
+
+            try {
+              const result = await this.contentSync.importSeriesFromMoviesApi(tmdbId, job.id);
+              if (result.imported) imported++;
+              else skipped++;
+            } catch {
+              failed++;
+            }
             await this.updateJobProgress(job.id, imported, skipped, failed);
-            continue;
           }
 
-          try {
-            const result = await this.contentSync.importSeriesFromMoviesApi(tmdbId, job.id);
-            if (result.imported) imported++;
-            else skipped++;
-          } catch {
-            failed++;
-          }
-          await this.updateJobProgress(job.id, imported, skipped, failed);
+          if (items.length < resultsPerPage) break;
+          await this.delay(500);
         }
-
-        if (items.length < resultsPerPage) break;
-        await this.delay(500);
       }
 
       if (this.shouldStop()) {

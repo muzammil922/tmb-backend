@@ -72,7 +72,7 @@ export class SeriesService {
       };
     }
 
-    const [seriesList, total] = await Promise.all([
+    const [seriesList, total, webSeriesCount, animeCount, activeCount, draftCount] = await Promise.all([
       this.prisma.series.findMany({
         where,
         include: {
@@ -93,6 +93,10 @@ export class SeriesService {
         take: limit,
       }),
       this.prisma.series.count({ where }),
+      this.prisma.series.count({ where: { contentType: ContentType.SERIES } }),
+      this.prisma.series.count({ where: { contentType: ContentType.ANIME } }),
+      this.prisma.series.count({ where: { status: MovieStatus.ACTIVE } }),
+      this.prisma.series.count({ where: { status: MovieStatus.DRAFT } }),
     ]);
 
     const mapped = seriesList.map((s) => ({
@@ -110,6 +114,7 @@ export class SeriesService {
       rating: s.rating,
       voteCount: s.voteCount,
       language: s.language,
+      status: s.status,
       contentType: s.contentType,
       contentSource: s.contentSource,
       categories: s.categorySeries.map((cs) => cs.category),
@@ -121,7 +126,12 @@ export class SeriesService {
       data: mapped,
       page,
       totalPages: Math.ceil(total / limit) || 1,
+      total,
       totalResults: total,
+      webSeriesCount,
+      animeCount,
+      activeCount,
+      draftCount,
     };
   }
 
@@ -413,5 +423,33 @@ export class SeriesService {
       data,
     });
   }
+
+  async bulkUpdateStatus(data: { ids?: string[]; status: MovieStatus; all?: boolean }) {
+    if (data.all) {
+      return this.prisma.series.updateMany({
+        data: { status: data.status },
+      });
+    }
+    if (data.ids && data.ids.length > 0) {
+      return this.prisma.series.updateMany({
+        where: { id: { in: data.ids } },
+        data: { status: data.status },
+      });
+    }
+    return { count: 0 };
+  }
+
+  async bulkDelete(data: { ids?: string[]; all?: boolean }) {
+    if (data.all) {
+      return this.prisma.series.deleteMany({});
+    }
+    if (data.ids && data.ids.length > 0) {
+      return this.prisma.series.deleteMany({
+        where: { id: { in: data.ids } },
+      });
+    }
+    return { count: 0 };
+  }
 }
+
 
