@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ContentSource, ContentType, SyncStatus } from '@prisma/client';
+import { ContentSource, ContentType, PlaybackStatus, SyncStatus } from '@prisma/client';
 import { CacheService } from '../../common/cache/cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
@@ -10,6 +10,7 @@ import { resolvePresets, SYNC_PRESETS, SyncPresetId } from './sync-presets';
 
 export type SyncRunSource = 'MOVIESAPI' | 'IMDB3' | 'ALL';
 export type SyncContentType = 'ALL' | 'MOVIES' | 'SERIES';
+export type RepairContentType = 'ALL' | 'MOVIES' | 'SERIES' | 'ANIME';
 
 @Injectable()
 export class SyncService {
@@ -650,6 +651,146 @@ export class SyncService {
         },
       });
       throw error;
+    }
+  }
+
+  async countRepairable(contentType: RepairContentType = 'ALL') {
+    const playbackWhere = { in: [PlaybackStatus.BROKEN, PlaybackStatus.PENDING] };
+    const seriesWhere: { playbackStatus: typeof playbackWhere; contentType?: ContentType } = {
+      playbackStatus: playbackWhere,
+    };
+
+    if (contentType === 'ANIME') {
+      seriesWhere.contentType = ContentType.ANIME;
+    } else if (contentType === 'SERIES') {
+      seriesWhere.contentType = ContentType.SERIES;
+    }
+
+    const includeMovies = contentType === 'ALL' || contentType === 'MOVIES';
+    const includeSeries = contentType === 'ALL' || contentType === 'SERIES' || contentType === 'ANIME';
+
+    const [movies, series] = await Promise.all([
+      includeMovies ? this.prisma.movie.count({ where: { playbackStatus: playbackWhere } }) : Promise.resolve(0),
+      includeSeries ? this.prisma.series.count({ where: seriesWhere }) : Promise.resolve(0),
+    ]);
+
+    return { movies, series, total: movies + series };
+  }
+
+  async runRepairBroken(options: { contentType?: RepairContentType } = {}) {
+    if (this.running) {
+      return { message: 'Sync already running', started: false };
+    }
+
+    const contentType = options.contentType ?? 'ALL';
+    const counts = await this.countRepairable(contentType);
+    if (counts.total === 0) {
+      return { started: false, message: 'No broken or pending content to repair', total: 0 };
+    }
+
+    const job = await this.prisma.syncJob.create({
+      data: { source: ContentSource.TMDB_ONLY, status: SyncStatus.RUNNING, startedAt: new Date() },
+    });
+
+    this.running = true;
+    this.cancelRequested = false;
+    this.activeJobId = job.id;
+
+    void this.executeRepairBroken(job.id, contentType).finally(() => {
+      this.running = false;
+      this.cancelRequested = false;
+      this.activeJobId = null;
+    });
+
+    return {
+      started: true,
+      jobId: job.id,
+      total: counts.total,
+      movies: counts.movies,
+      series: counts.series,
+      message: `Repair started for ${counts.total} broken/pending items`,
+    };
+  }
+
+  private async executeRepairBroken(jobId: string, contentType: RepairContentType) {
+    let fixed = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    const playbackWhere = { in: [PlaybackStatus.BROKEN, PlaybackStatus.PENDING] };
+    const seriesWhere: { playbackStatus: typeof playbackWhere; contentType?: ContentType } = {
+      playbackStatus: playbackWhere,
+    };
+
+    if (contentType === 'ANIME') {
+      seriesWhere.contentType = ContentType.ANIME;
+    } else if (contentType === 'SERIES') {
+      seriesWhere.contentType = ContentType.SERIES;
+    }
+
+    const includeMovies = contentType === 'ALL' || contentType === 'MOVIES';
+    const includeSeries = contentType === 'ALL' || contentType === 'SERIES' || contentType === 'ANIME';
+
+    try {
+      const movies = includeMovies
+        ? await this.prisma.movie.findMany({
+            where: { playbackStatus: playbackWhere },
+            select: { id: true },
+            orderBy: { updatedAt: 'asc' },
+          })
+        : [];
+
+      const series = includeSeries
+        ? await this.prisma.series.findMany({
+            where: seriesWhere,
+            select: { id: true },
+            orderBy: { updatedAt: 'asc' },
+          })
+        : [];
+
+      for (const movie of movies) {
+        if (this.shouldStop()) break;
+        try {
+          const result = await this.contentSync.repairMovie(movie.id, jobId);
+          if (result.fixed) fixed++;
+          else skipped++;
+        } catch {
+          failed++;
+        }
+        await this.updateJobProgress(jobId, fixed, skipped, failed);
+        await this.delay(300);
+      }
+
+      for (const item of series) {
+        if (this.shouldStop()) break;
+        try {
+          const result = await this.contentSync.repairSeries(item.id, jobId);
+          if (result.fixed) fixed++;
+          else skipped++;
+        } catch {
+          failed++;
+        }
+        await this.updateJobProgress(jobId, fixed, skipped, failed);
+        await this.delay(300);
+      }
+
+      if (this.shouldStop()) {
+        await this.stopJob(jobId, fixed, skipped, failed);
+        return;
+      }
+      await this.completeJob(jobId, fixed, skipped, failed);
+    } catch (error: any) {
+      await this.prisma.syncJob.update({
+        where: { id: jobId },
+        data: {
+          status: SyncStatus.FAILED,
+          completedAt: new Date(),
+          errorMessage: error?.message ?? 'Unknown error',
+          imported: fixed,
+          skipped,
+          failed,
+        },
+      });
     }
   }
 

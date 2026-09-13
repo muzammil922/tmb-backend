@@ -5,7 +5,9 @@ import { ContentSyncService } from '../../sync/content-sync.service';
 import { SyncService } from '../../sync/sync.service';
 import { BulkDeleteDto } from './dto/bulk-delete.dto';
 import { RecheckPlaybackDto } from './dto/recheck-playback.dto';
+import { RepairBrokenDto } from './dto/repair-broken.dto';
 import { RunFullDto } from './dto/run-full.dto';
+import { RepairContentType } from '../../sync/sync.service';
 
 @Injectable()
 export class AdminAutomationService {
@@ -21,6 +23,16 @@ export class AdminAutomationService {
       skipBroken: dto.skipBroken,
       contentType: dto.contentType,
     });
+  }
+
+  repairBroken(dto: RepairBrokenDto) {
+    const contentType = (dto.contentType ?? 'ALL') as RepairContentType;
+    return this.syncService.runRepairBroken({ contentType });
+  }
+
+  repairCount(contentType?: string) {
+    const type = (contentType ?? 'ALL') as RepairContentType;
+    return this.syncService.countRepairable(type);
   }
 
   async getStats() {

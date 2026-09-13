@@ -107,6 +107,10 @@ export class TmdbService {
     return this.request('/search/movie', { query, page }, 1800);
   }
 
+  searchTv(query: string, page = 1) {
+    return this.request('/search/tv', { query, page }, 1800);
+  }
+
   discoverByGenre(genreId: number, page = 1) {
     return this.request('/discover/movie', { with_genres: genreId, page, sort_by: 'popularity.desc' }, 3600);
   }

@@ -326,6 +326,306 @@ export class ContentSyncService {
     });
   }
 
+  async repairMovie(movieId: string, jobId?: string) {
+    const movie = await this.prisma.movie.findUnique({
+      where: { id: movieId },
+      include: { genres: { include: { genre: true } } },
+    });
+    if (!movie) {
+      return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'not_found' };
+    }
+
+    if (movie.playbackStatus === PlaybackStatus.WORKING) {
+      return { fixed: false, playbackStatus: PlaybackStatus.WORKING, reason: 'already_working' };
+    }
+
+    if (movie.playbackMode === PlaybackMode.HOSTED && movie.videoUrl) {
+      const hostedStatus = await this.playbackVerifier.verify({
+        contentType: ContentType.MOVIE,
+        tmdbId: movie.tmdbId,
+        title: movie.title,
+        playbackMode: movie.playbackMode,
+        videoUrl: movie.videoUrl,
+      });
+      if (hostedStatus === PlaybackStatus.WORKING) {
+        await this.prisma.movie.update({
+          where: { id: movieId },
+          data: { playbackStatus: hostedStatus, playbackCheckedAt: new Date() },
+        });
+        if (jobId) {
+          await this.logEntry(jobId, movie.tmdbId, movie.upstreamId, movie.title, 'REPAIRED', 'hosted_ok', ContentType.MOVIE);
+        }
+        return { fixed: true, playbackStatus: hostedStatus, reason: 'hosted_ok', tmdbId: movie.tmdbId };
+      }
+    }
+
+    let tmdbId = movie.tmdbId;
+    if (!tmdbId) {
+      tmdbId = await this.resolveMovieTmdbId(movie.title, movie.releaseDate);
+      if (!tmdbId) {
+        await this.prisma.movie.update({
+          where: { id: movieId },
+          data: { playbackStatus: PlaybackStatus.BROKEN, playbackCheckedAt: new Date() },
+        });
+        if (jobId) {
+          await this.logEntry(jobId, null, movie.upstreamId, movie.title, 'SKIPPED', 'no_tmdb_match', ContentType.MOVIE);
+        }
+        return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'no_tmdb_match' };
+      }
+
+      const duplicate = await this.prisma.movie.findFirst({
+        where: { tmdbId, id: { not: movieId } },
+      });
+      if (duplicate) {
+        if (jobId) {
+          await this.logEntry(jobId, tmdbId, null, movie.title, 'SKIPPED', 'duplicate_tmdb', ContentType.MOVIE);
+        }
+        return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'duplicate_tmdb', tmdbId };
+      }
+    }
+
+    try {
+      const details: any = await this.tmdb.movieDetails(tmdbId);
+      const playbackStatus = await this.playbackVerifier.verify({
+        contentType: ContentType.MOVIE,
+        tmdbId,
+        title: details.title,
+        language: details.original_language,
+        genres: details.genres,
+        playbackMode: PlaybackMode.EMBED,
+      });
+
+      const trailer = details.videos?.results?.find(
+        (v: any) => v.site === 'YouTube' && v.type === 'Trailer',
+      );
+
+      const updated = await this.prisma.movie.update({
+        where: { id: movieId },
+        data: {
+          tmdbId,
+          title: details.title,
+          originalTitle: details.original_title,
+          overview: details.overview,
+          posterPath: details.poster_path,
+          backdropPath: details.backdrop_path,
+          releaseDate: details.release_date ? new Date(details.release_date) : null,
+          runtime: details.runtime,
+          rating: details.vote_average,
+          voteCount: details.vote_count,
+          language: details.original_language,
+          trailerKey: trailer?.key,
+          status: MovieStatus.ACTIVE,
+          source: MovieSource.TMDB,
+          contentSource: playbackStatus === PlaybackStatus.WORKING ? ContentSource.MOVIESAPI : movie.contentSource,
+          playbackMode: PlaybackMode.EMBED,
+          playbackStatus,
+          playbackCheckedAt: new Date(),
+          upstreamSyncedAt: new Date(),
+        },
+      });
+
+      await this.syncMovieRelations(movieId, details);
+
+      const reason = playbackStatus === PlaybackStatus.WORKING ? 'embed_ok' : 'embed_broken';
+      if (jobId) {
+        await this.logEntry(
+          jobId,
+          tmdbId,
+          null,
+          updated.title,
+          playbackStatus === PlaybackStatus.WORKING ? 'REPAIRED' : 'SKIPPED',
+          reason,
+          ContentType.MOVIE,
+        );
+      }
+
+      return {
+        fixed: playbackStatus === PlaybackStatus.WORKING,
+        playbackStatus,
+        reason,
+        tmdbId,
+      };
+    } catch (error) {
+      this.logger.error(`Repair movie failed for ${movieId}`, error);
+      if (jobId) {
+        await this.logEntry(jobId, tmdbId, null, movie.title, 'FAILED', 'repair_error', ContentType.MOVIE);
+      }
+      throw error;
+    }
+  }
+
+  async repairSeries(seriesId: string, jobId?: string) {
+    const series = await this.prisma.series.findUnique({
+      where: { id: seriesId },
+      include: { genres: { include: { genre: true } } },
+    });
+    if (!series) {
+      return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'not_found' };
+    }
+
+    if (series.playbackStatus === PlaybackStatus.WORKING) {
+      return { fixed: false, playbackStatus: PlaybackStatus.WORKING, reason: 'already_working' };
+    }
+
+    let tmdbId = series.tmdbId;
+    if (!tmdbId) {
+      tmdbId = await this.resolveSeriesTmdbId(series.title, series.firstAirDate);
+      if (!tmdbId) {
+        await this.prisma.series.update({
+          where: { id: seriesId },
+          data: { playbackStatus: PlaybackStatus.BROKEN, playbackCheckedAt: new Date() },
+        });
+        if (jobId) {
+          await this.logEntry(jobId, null, series.upstreamId, series.title, 'SKIPPED', 'no_tmdb_match', series.contentType);
+        }
+        return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'no_tmdb_match' };
+      }
+
+      const duplicate = await this.prisma.series.findFirst({
+        where: { tmdbId, id: { not: seriesId } },
+      });
+      if (duplicate) {
+        if (jobId) {
+          await this.logEntry(jobId, tmdbId, null, series.title, 'SKIPPED', 'duplicate_tmdb', series.contentType);
+        }
+        return { fixed: false, playbackStatus: PlaybackStatus.BROKEN, reason: 'duplicate_tmdb', tmdbId };
+      }
+    }
+
+    try {
+      const details: any = await this.tmdb.tvDetails(tmdbId);
+      const isAnime =
+        series.contentType === ContentType.ANIME ||
+        isAnimeContent({
+          original_language: details.original_language,
+          origin_country: details.origin_country,
+          genres: details.genres,
+          contentType: series.contentType,
+        });
+
+      const playbackStatus = await this.playbackVerifier.verify({
+        contentType: isAnime ? ContentType.ANIME : ContentType.SERIES,
+        tmdbId,
+        title: details.name,
+        language: details.original_language,
+        genres: details.genres,
+        playbackMode: PlaybackMode.EMBED,
+      });
+
+      const updated = await this.prisma.series.update({
+        where: { id: seriesId },
+        data: {
+          tmdbId,
+          title: details.name,
+          originalTitle: details.original_name,
+          overview: details.overview,
+          posterPath: details.poster_path,
+          backdropPath: details.backdrop_path,
+          firstAirDate: details.first_air_date ? new Date(details.first_air_date) : null,
+          lastAirDate: details.last_air_date ? new Date(details.last_air_date) : null,
+          numberOfSeasons: details.number_of_seasons,
+          numberOfEpisodes: details.number_of_episodes,
+          rating: details.vote_average,
+          voteCount: details.vote_count,
+          language: details.original_language,
+          status: MovieStatus.ACTIVE,
+          contentType: isAnime ? ContentType.ANIME : ContentType.SERIES,
+          contentSource: playbackStatus === PlaybackStatus.WORKING ? ContentSource.MOVIESAPI : series.contentSource,
+          playbackMode: PlaybackMode.EMBED,
+          playbackStatus,
+          playbackCheckedAt: new Date(),
+          upstreamSyncedAt: new Date(),
+        },
+      });
+
+      await this.syncSeriesRelations(seriesId, details);
+      if (playbackStatus === PlaybackStatus.WORKING) {
+        await this.syncTmdbSeriesEpisodes(seriesId, tmdbId, details);
+      }
+      await autoCategorizeSeries(this.prisma, seriesId);
+
+      const reason = playbackStatus === PlaybackStatus.WORKING ? 'embed_ok' : 'embed_broken';
+      if (jobId) {
+        await this.logEntry(
+          jobId,
+          tmdbId,
+          null,
+          updated.title,
+          playbackStatus === PlaybackStatus.WORKING ? 'REPAIRED' : 'SKIPPED',
+          reason,
+          isAnime ? ContentType.ANIME : ContentType.SERIES,
+        );
+      }
+
+      return {
+        fixed: playbackStatus === PlaybackStatus.WORKING,
+        playbackStatus,
+        reason,
+        tmdbId,
+      };
+    } catch (error) {
+      this.logger.error(`Repair series failed for ${seriesId}`, error);
+      if (jobId) {
+        await this.logEntry(jobId, tmdbId, null, series.title, 'FAILED', 'repair_error', series.contentType);
+      }
+      throw error;
+    }
+  }
+
+  private async resolveMovieTmdbId(title: string, releaseDate?: Date | null): Promise<number | null> {
+    const query = title.trim();
+    if (!query) return null;
+
+    const res: any = await this.tmdb.searchMovies(query, 1);
+    const results = res.results ?? [];
+    if (!results.length) return null;
+
+    const year = releaseDate?.getFullYear();
+    if (year) {
+      for (const item of results.slice(0, 5)) {
+        if (!item.release_date) continue;
+        const itemYear = new Date(item.release_date).getFullYear();
+        if (Math.abs(itemYear - year) <= 1 && this.titlesClose(query, item.title)) {
+          return item.id;
+        }
+      }
+    }
+
+    const first = results[0];
+    return this.titlesClose(query, first.title) ? first.id : null;
+  }
+
+  private async resolveSeriesTmdbId(title: string, firstAirDate?: Date | null): Promise<number | null> {
+    const query = title.trim();
+    if (!query) return null;
+
+    const res: any = await this.tmdb.searchTv(query, 1);
+    const results = res.results ?? [];
+    if (!results.length) return null;
+
+    const year = firstAirDate?.getFullYear();
+    if (year) {
+      for (const item of results.slice(0, 5)) {
+        if (!item.first_air_date) continue;
+        const itemYear = new Date(item.first_air_date).getFullYear();
+        if (Math.abs(itemYear - year) <= 1 && this.titlesClose(query, item.name)) {
+          return item.id;
+        }
+      }
+    }
+
+    const first = results[0];
+    return this.titlesClose(query, first.name) ? first.id : null;
+  }
+
+  private titlesClose(a: string, b: string): boolean {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const na = norm(a);
+    const nb = norm(b);
+    if (!na || !nb) return false;
+    return na === nb || na.includes(nb) || nb.includes(na);
+  }
+
   async importMovieFromImdb3(id: number | string, jobId?: string) {
     const upstreamId = String(id).trim();
 

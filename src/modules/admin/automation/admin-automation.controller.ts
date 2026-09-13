@@ -7,6 +7,7 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { AdminAutomationService } from './admin-automation.service';
 import { BulkDeleteDto } from './dto/bulk-delete.dto';
 import { RecheckPlaybackDto } from './dto/recheck-playback.dto';
+import { RepairBrokenDto } from './dto/repair-broken.dto';
 import { RunFullDto } from './dto/run-full.dto';
 
 @ApiTags('admin-automation')
@@ -20,6 +21,16 @@ export class AdminAutomationController {
   @Post('automation/run-full')
   runFull(@Body() body: RunFullDto) {
     return this.automationService.runFull(body);
+  }
+
+  @Post('automation/repair-broken')
+  repairBroken(@Body() body: RepairBrokenDto) {
+    return this.automationService.repairBroken(body);
+  }
+
+  @Get('automation/repair-count')
+  repairCount(@Query('contentType') contentType?: string) {
+    return this.automationService.repairCount(contentType);
   }
 
   @Get('automation/stats')
