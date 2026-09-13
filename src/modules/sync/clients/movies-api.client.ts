@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { CacheService } from '../../../common/cache/cache.service';
-import { UpstreamDiscoverItem, UpstreamDiscoverResponse } from './urdubox.client';
+import { UpstreamDiscoverItem, UpstreamDiscoverResponse } from './upstream.types';
 
 @Injectable()
 export class MoviesApiClient {

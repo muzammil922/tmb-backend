@@ -3,10 +3,6 @@ import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validato
 export class UpdateSyncSettingsDto {
   @IsOptional()
   @IsBoolean()
-  urduboxEnabled?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
   moviesApiEnabled?: boolean;
 
   @IsOptional()
@@ -26,6 +22,12 @@ export class UpdateSyncSettingsDto {
   @IsOptional()
   @IsInt()
   lastImdb3Id?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(25)
+  imdb3DailyCount?: number;
 
   @IsOptional()
   @IsString()

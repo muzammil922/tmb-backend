@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { MovieSource, MovieStatus, Prisma } from '@prisma/client';
+import { MovieSource, MovieStatus, PlaybackStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TmdbService } from '../../tmdb/tmdb.service';
 import { autoCategorizeMovie } from '../categories/category-helper';
@@ -11,12 +11,28 @@ export class AdminMoviesService {
     private readonly tmdb: TmdbService,
   ) {}
 
-  async list(page = 1, search = '', limit = 50) {
-    const where: Prisma.MovieWhereInput = search
-      ? { title: { contains: search, mode: 'insensitive' } }
-      : {};
+  async list(
+    page = 1,
+    search = '',
+    limit = 50,
+    playbackStatus?: string,
+  ) {
+    const where: Prisma.MovieWhereInput = {};
+
+    if (search) {
+      where.title = { contains: search, mode: 'insensitive' };
+    }
+
+    if (playbackStatus && playbackStatus !== 'all') {
+      if (playbackStatus === 'not-working') {
+        where.playbackStatus = { not: PlaybackStatus.WORKING };
+      } else if (playbackStatus in PlaybackStatus) {
+        where.playbackStatus = playbackStatus as PlaybackStatus;
+      }
+    }
+
     const skip = (page - 1) * limit;
-    const [data, total] = await Promise.all([
+    const [data, total, workingCount, brokenCount, pendingCount, notWorkingCount] = await Promise.all([
       this.prisma.movie.findMany({
         where,
         orderBy: { updatedAt: 'desc' },
@@ -36,8 +52,20 @@ export class AdminMoviesService {
         },
       }),
       this.prisma.movie.count({ where }),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.WORKING } }),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.BROKEN } }),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.PENDING } }),
+      this.prisma.movie.count({
+        where: { playbackStatus: { not: PlaybackStatus.WORKING } },
+      }),
     ]);
-    return { data, page, totalPages: Math.ceil(total / limit) || 1, totalResults: total };
+    return {
+      data,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+      totalResults: total,
+      stats: { workingCount, brokenCount, pendingCount, notWorkingCount },
+    };
   }
 
   async findOne(id: string) {

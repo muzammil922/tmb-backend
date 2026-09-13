@@ -17,6 +17,7 @@ import { AdminHomepageModule } from './modules/admin/homepage/admin-homepage.mod
 import { AdminBannersModule } from './modules/admin/banners/admin-banners.module';
 import { AdminCategoriesModule } from './modules/admin/categories/admin-categories.module';
 import { AdminUsersModule } from './modules/admin/users/admin-users.module';
+import { AdminAutomationModule } from './modules/admin/automation/admin-automation.module';
 import { MediaModule } from './modules/media/media.module';
 import { SyncModule } from './modules/sync/sync.module';
 import { SeriesModule } from './modules/series/series.module';
@@ -43,6 +44,7 @@ import { AppController } from './app.controller';
     AdminBannersModule,
     AdminCategoriesModule,
     AdminUsersModule,
+    AdminAutomationModule,
     MediaModule,
     SyncModule,
   ],

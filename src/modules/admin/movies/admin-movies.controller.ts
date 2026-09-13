@@ -19,8 +19,14 @@ export class AdminMoviesController {
     @Query('page') page = '1',
     @Query('search') search = '',
     @Query('limit') limit = '50',
+    @Query('playbackStatus') playbackStatus?: string,
   ) {
-    return this.adminMoviesService.list(Number(page) || 1, search, Number(limit) || 50);
+    return this.adminMoviesService.list(
+      Number(page) || 1,
+      search,
+      Number(limit) || 50,
+      playbackStatus,
+    );
   }
 
   @Get(':id')

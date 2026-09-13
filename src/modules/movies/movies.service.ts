@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Movie, MovieStatus, Prisma } from '@prisma/client';
+import { publicMovieFilter } from '../../common/content-filters';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
 import { CacheService } from '../../common/cache/cache.service';
@@ -56,13 +57,17 @@ export class MoviesService {
     cast: true,
   } satisfies Prisma.MovieInclude;
 
+  private movieListInclude = {
+    genres: { include: { genre: true } },
+  } satisfies Prisma.MovieInclude;
+
   async listFromDb(where: Prisma.MovieWhereInput, page = 1, limit = 48) {
     const safeLimit = Math.min(Math.max(limit, 1), 100); // cap between 1-100
     const skip = (page - 1) * safeLimit;
     const [data, total] = await Promise.all([
       this.prisma.movie.findMany({
-        where: { status: MovieStatus.ACTIVE, ...where },
-        include: this.movieInclude,
+        where: { status: MovieStatus.ACTIVE, ...publicMovieFilter, ...where },
+        include: this.movieListInclude,
         orderBy: { rating: 'desc' },
         skip,
         take: safeLimit,
@@ -130,7 +135,7 @@ export class MoviesService {
   }
 
   async getList(type: string, page = 1, limit = 48) {
-    const dbCount = await this.prisma.movie.count({ where: { status: MovieStatus.ACTIVE } });
+    const dbCount = await this.prisma.movie.count({ where: { status: MovieStatus.ACTIVE, ...publicMovieFilter } });
     if (dbCount >= 5) {
       const orderMap: Record<string, Prisma.MovieOrderByWithRelationInput> = {
         trending: { updatedAt: 'desc' },
@@ -145,16 +150,24 @@ export class MoviesService {
   }
 
   async findOne(id: string) {
-    const movie = await this.prisma.movie.findUnique({
-      where: { id },
+    const cacheKey = `movie:detail:${id}`;
+    const cached = await this.cache.get<ReturnType<typeof this.mapMovie>>(cacheKey);
+    if (cached) return cached;
+
+    const movie = await this.prisma.movie.findFirst({
+      where: { id, ...publicMovieFilter },
       include: this.movieInclude,
     });
-    if (movie) return this.mapMovie(movie);
+    if (movie) {
+      const mapped = this.mapMovie(movie);
+      await this.cache.set(cacheKey, mapped, 300);
+      return mapped;
+    }
 
     const tmdbId = Number(id);
     if (!Number.isNaN(tmdbId)) {
       const details: any = await this.tmdb.movieDetails(tmdbId);
-      return {
+      const mapped = {
         id: String(details.id),
         tmdbId: details.id,
         title: details.title,
@@ -184,8 +197,11 @@ export class MoviesService {
           available: true,
           source: 'STREAM',
           playerUrl: `/api/player/embed/movie/${details.id}`,
+          sourcesUrl: `/api/player/sources/movie/${details.id}`,
         },
       };
+      await this.cache.set(cacheKey, mapped, 300);
+      return mapped;
     }
     throw new NotFoundException('Movie not found');
   }
@@ -222,6 +238,7 @@ export class MoviesService {
         this.prisma.movie.findMany({
           where: {
             status: MovieStatus.ACTIVE,
+            ...publicMovieFilter,
             id: { not: id },
             genres: { some: { genreId: { in: genreIds } } },
           },
@@ -233,6 +250,7 @@ export class MoviesService {
         this.prisma.movie.count({
           where: {
             status: MovieStatus.ACTIVE,
+            ...publicMovieFilter,
             id: { not: id },
             genres: { some: { genreId: { in: genreIds } } },
           },
@@ -301,7 +319,7 @@ export class MoviesService {
     if (genre) {
       const skip = (page - 1) * 20;
       const movies = await this.prisma.movie.findMany({
-        where: { status: MovieStatus.ACTIVE, genres: { some: { genreId: genre.id } } },
+        where: { status: MovieStatus.ACTIVE, ...publicMovieFilter, genres: { some: { genreId: genre.id } } },
         include: this.movieInclude,
         skip,
         take: 20,

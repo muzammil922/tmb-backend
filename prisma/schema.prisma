@@ -60,6 +60,12 @@ enum SyncStatus {
   FAILED
 }
 
+enum PlaybackStatus {
+  PENDING
+  WORKING
+  BROKEN
+}
+
 model User {
   id           String     @id @default(cuid())
   name         String
@@ -98,12 +104,15 @@ model Movie {
   videoProvider String?
   videoDuration Int?
   trailerKey    String?
-  contentSource   ContentSource?
-  playbackMode    PlaybackMode?
-  upstreamId      String?
-  upstreamSyncedAt DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  contentSource      ContentSource?
+  playbackMode       PlaybackMode?
+  playbackStatus     PlaybackStatus @default(PENDING)
+  playbackCheckedAt  DateTime?
+  syncPreset         String?
+  upstreamId         String?
+  upstreamSyncedAt   DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   genres              MovieGenre[]
   cast                MovieCast[]
@@ -251,13 +260,13 @@ model CategorySeries {
 
 model SyncSettings {
   id                String   @id @default("default")
-  urduboxEnabled    Boolean  @default(false)
   moviesApiEnabled  Boolean  @default(false)
   imdb3Enabled      Boolean  @default(true)
   automationEnabled Boolean  @default(false)
   syncIntervalHours Int      @default(24)
   lastScheduledSyncAt DateTime?
   lastImdb3Id       Int      @default(123290)
+  imdb3DailyCount   Int      @default(20)
   scheduleStart     String?
   scheduleEnd       String?
   cronExpression    String?
@@ -311,11 +320,14 @@ model Series {
   language         String?
   status           MovieStatus    @default(ACTIVE)
   contentType      ContentType    @default(SERIES)
-  contentSource    ContentSource?
-  playbackMode     PlaybackMode?
-  upstreamSyncedAt DateTime?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  contentSource      ContentSource?
+  playbackMode       PlaybackMode?
+  playbackStatus     PlaybackStatus @default(PENDING)
+  playbackCheckedAt  DateTime?
+  syncPreset         String?
+  upstreamSyncedAt   DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   seasons          Season[]
   episodes         Episode[]

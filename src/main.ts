@@ -16,8 +16,6 @@ async function bootstrap() {
     'https://admin.flowlab.fun',
     'http://localhost:3000',
     'http://localhost:5173',
-    'https://urdubox.pk',
-    'https://www.urdubox.pk',
   ].filter(Boolean) as string[];
 
   app.enableCors({

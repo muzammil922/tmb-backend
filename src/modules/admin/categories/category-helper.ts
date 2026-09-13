@@ -14,8 +14,7 @@ export const DEFAULT_CATEGORIES = [
   { name: '⚡ Thriller & Suspense', slug: 'thriller', description: 'Edge-of-the-seat thrillers and tension' },
   { name: '📺 Web Series & Shows', slug: 'web-series', description: 'Binge-worthy web series, drama serials, and TV shows with full episodes' },
   { name: '⛩️ Anime Series & Movies', slug: 'anime', description: 'Top Japanese anime series, movies, and animated sagas' },
-  { name: '🌟 UrduBox Dramas', slug: 'urdubox-dramas', description: 'Popular Pakistani dramas and Turkish serials in Urdu' },
-  { name: '🌟 UrduBox Exclusives', slug: 'urdubox', description: 'Exclusive Pakistani and Urdu dubbed releases' },
+  { name: '🎬 Bollywood Hits', slug: 'bollywood', description: 'Popular Hindi and Indian cinema' },
   { name: '🎬 Hindi Dubbed', slug: 'hindi-dubbed', description: 'Popular international movies dubbed in Hindi' },
   { name: '🍿 Hollywood Masterpieces', slug: 'hollywood', description: 'Critically acclaimed Hollywood masterworks' },
 ];
@@ -60,25 +59,28 @@ export async function autoCategorizeMovie(prisma: PrismaService, movieId: string
   const overviewLower = (movie.overview || '').toLowerCase();
 
   if (
-    movie.contentSource === 'URDBOX' ||
-    movie.playbackMode === 'URDBOX' ||
-    titleLower.includes('urdu') ||
-    overviewLower.includes('urdu')
+    movie.language === 'hi' ||
+    titleLower.includes('hindi') ||
+    titleLower.includes('bollywood') ||
+    overviewLower.includes('bollywood')
   ) {
-    matchedSlugs.add('urdubox');
+    matchedSlugs.add('bollywood');
+    matchedSlugs.add('hindi-dubbed');
   }
 
   if (
-    movie.language === 'hi' ||
-    titleLower.includes('hindi') ||
-    titleLower.includes('dubbed') ||
-    overviewLower.includes('hindi dubbed')
+    movie.language === 'hi' &&
+    (titleLower.includes('dubbed') || overviewLower.includes('hindi dubbed'))
   ) {
     matchedSlugs.add('hindi-dubbed');
   }
 
   if (movie.language === 'en' || !movie.language) {
     matchedSlugs.add('hollywood');
+  }
+
+  if (movie.syncPreset) {
+    matchedSlugs.add(movie.syncPreset);
   }
 
   if (movie.featured || (movie.rating && movie.rating >= 7.0)) {
@@ -147,19 +149,13 @@ export async function autoCategorizeSeries(prisma: PrismaService, seriesId: stri
   if (genreNames.some((g) => g.includes('romance'))) matchedSlugs.add('romance');
   if (genreNames.some((g) => g.includes('thriller'))) matchedSlugs.add('thriller');
 
-  // UrduBox dramas
-  if (
-    series.contentSource === 'URDBOX' ||
-    series.playbackMode === 'URDBOX' ||
-    titleLower.includes('urdu') ||
-    overviewLower.includes('urdu')
-  ) {
-    matchedSlugs.add('urdubox');
-    matchedSlugs.add('urdubox-dramas');
+  if (series.language === 'hi' || titleLower.includes('bollywood') || titleLower.includes('hindi')) {
+    matchedSlugs.add('bollywood');
+    matchedSlugs.add('hindi-dubbed');
   }
 
-  if (series.language === 'hi' || titleLower.includes('hindi') || titleLower.includes('dubbed')) {
-    matchedSlugs.add('hindi-dubbed');
+  if (series.syncPreset) {
+    matchedSlugs.add(series.syncPreset);
   }
 
   if (series.rating && series.rating >= 7.0) {

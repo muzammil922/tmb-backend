@@ -8,7 +8,6 @@ import { ContentSyncService } from './content-sync.service';
 import { SyncService } from './sync.service';
 import { UpdateSyncSettingsDto } from './dto/update-sync-settings.dto';
 import { RunSyncDto } from './dto/run-sync.dto';
-import { BrowserUrduboxBatchDto } from './dto/browser-urdubox-import.dto';
 import { PublishOwnDto } from './dto/publish-own.dto';
 
 @ApiTags('admin-sync')
@@ -34,6 +33,13 @@ export class SyncController {
 
   @Post('run')
   runSync(@Body() body: RunSyncDto) {
+    if (body.presets?.length) {
+      return this.syncService.runFullSync({
+        presets: body.presets,
+        skipBroken: body.skipBroken,
+        contentType: body.contentType ?? 'ALL',
+      });
+    }
     return this.syncService.runSync(body.source ?? 'ALL', body.contentType ?? 'ALL');
   }
 
@@ -66,16 +72,6 @@ export class SyncController {
   importImdb3Batch(@Body() body: { startId: number; count?: number }) {
     if (!body?.startId) throw new BadRequestException('startId is required');
     return this.syncService.importImdb3Batch(Number(body.startId), Number(body.count || 10));
-  }
-
-  @Post('urdubox/browser/start')
-  startBrowserUrdubox() {
-    return this.syncService.startBrowserUrduboxJob();
-  }
-
-  @Post('urdubox/browser/batch')
-  browserUrduboxBatch(@Body() body: BrowserUrduboxBatchDto) {
-    return this.syncService.browserImportUrduboxBatch(body.jobId, body.items ?? [], body.finalize ?? false);
   }
 
   @Get('jobs')
@@ -111,32 +107,14 @@ export class ContentController {
   async check(@Param('tmdbId') tmdbId: string, @Query('type') type: 'movie' | 'series' = 'movie') {
     const contentType = type === 'series' ? ContentType.SERIES : ContentType.MOVIE;
     const decision = await this.contentSync.checkContent(Number(tmdbId), contentType);
-    const urdubox = await this.contentSync.checkUrduboxAvailability(Number(tmdbId), contentType);
 
     return {
       tmdbId: Number(tmdbId),
       contentType,
       ...decision,
       exists: decision.action === 'SKIP',
-      urduboxAvailable: urdubox.available,
-      availableSources: [
-        ...(urdubox.available ? ['URDBOX'] : []),
-        'MOVIESAPI',
-        'HOSTED',
-      ],
+      availableSources: ['MOVIESAPI', 'VIDKING', 'VIDEASY', 'ALLMANGA', 'HOSTED'],
     };
-  }
-
-  @Post('import/urdubox')
-  importUrdubox(
-    @Body('tmdbId') tmdbId: number,
-    @Body('upstreamId') upstreamId?: string,
-    @Body('type') type: 'movie' | 'series' = 'movie',
-  ) {
-    if (type === 'series') {
-      return this.contentSync.importSeriesFromUrdubox(Number(tmdbId), upstreamId);
-    }
-    return this.contentSync.importMovieFromUrdubox(Number(tmdbId), upstreamId);
   }
 
   @Post('import/moviesapi')

@@ -1,11 +1,12 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ContentType, ContentSource, MovieStatus, PlaybackMode, Prisma } from '@prisma/client';
+import { publicSeriesFilter } from '../../common/content-filters';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { UrduboxClient } from '../sync/clients/urdubox.client';
-import { MoviesApiClient } from '../sync/clients/movies-api.client';
 import { Imdb3Client } from '../sync/clients/imdb3.client';
+import { PlayerService } from '../sync/player.service';
+import { isAnimeContent } from '../sync/helpers/anime.helper';
 
 export interface SeriesFilterQuery {
   category?: string;
@@ -25,8 +26,7 @@ export class SeriesService {
     private readonly prisma: PrismaService,
     private readonly tmdb: TmdbService,
     private readonly cache: CacheService,
-    private readonly urdubox: UrduboxClient,
-    private readonly moviesApi: MoviesApiClient,
+    private readonly player: PlayerService,
     private readonly imdb3: Imdb3Client,
   ) {}
 
@@ -35,7 +35,7 @@ export class SeriesService {
     const limit = Math.min(Math.max(1, Number(query.limit || 24)), 100);
     const skip = (page - 1) * limit;
 
-    const where: Prisma.SeriesWhereInput = {};
+    const where: Prisma.SeriesWhereInput = { ...publicSeriesFilter };
 
     if (query.status && query.status !== 'all') {
       if (query.status === 'live' || query.status === 'ACTIVE') {
@@ -142,7 +142,7 @@ export class SeriesService {
       : { id: idOrTmdb };
 
     let series = await this.prisma.series.findFirst({
-      where,
+      where: { ...where, ...publicSeriesFilter },
       include: {
         categorySeries: { include: { category: true } },
         genres: { include: { genre: true } },
@@ -233,10 +233,9 @@ export class SeriesService {
       id: string;
       name: string;
       url: string;
-      type: 'hls' | 'mp4' | 'embed';
+      type: 'hls' | 'mp4' | 'embed' | 'resolve';
     }[] = [];
 
-    // 1. Direct episode videoUrl from DB
     if (episode?.videoUrl) {
       const isHls = episode.videoUrl.includes('.m3u8');
       sources.push({
@@ -247,38 +246,18 @@ export class SeriesService {
       });
     }
 
-    // 2. UrduBox HLS stream
-    if (series.contentSource === ContentSource.URDBOX && tmdbId) {
-      sources.push({
-        id: 'server-urdbox-hls',
-        name: 'Server 1 (UrduBox HLS)',
-        url: `/api/stream/tv/${tmdbId}/${seasonNumber}/${episodeNumber}/playlist.m3u8`,
-        type: 'hls',
-      });
-    }
-
-    // 3. MoviesAPI embed
     if (tmdbId) {
-      sources.push({
-        id: 'server-moviesapi',
-        name: 'Server 2 (HD Embed)',
-        url: this.moviesApi.buildTvEmbedPath(tmdbId, seasonNumber, episodeNumber),
-        type: 'embed',
+      const isAnime =
+        series.contentType === ContentType.ANIME ||
+        isAnimeContent({
+          original_language: series.language,
+          contentType: series.contentType,
+        });
+      const playerSources = this.player.getTvSources(tmdbId, seasonNumber, episodeNumber, {
+        isAnime,
+        title: series.title,
       });
-
-      // 4. Cloud multi-server streams
-      sources.push({
-        id: 'server-smashy',
-        name: 'Server 3 (Smashy Fast)',
-        url: `https://player.smashy.stream/tv/${tmdbId}?s=${seasonNumber}&e=${episodeNumber}`,
-        type: 'embed',
-      });
-      sources.push({
-        id: 'server-autoembed',
-        name: 'Server 4 (AutoEmbed)',
-        url: `https://autoembed.co/tv/tmdb/${tmdbId}/${seasonNumber}/${episodeNumber}`,
-        type: 'embed',
-      });
+      sources.push(...playerSources.sources);
     }
 
     return {
@@ -300,68 +279,6 @@ export class SeriesService {
     upstreamId?: string | null,
   ) {
     try {
-      // If UrduBox, we can pull full seasons and episodes with stream links!
-      if (contentSource === ContentSource.URDBOX && upstreamId) {
-        const urduboxData = await this.urdubox.getSeriesPublic(upstreamId);
-        const seasonsList = urduboxData?.seasons ?? urduboxData?.data?.seasons ?? [];
-
-        if (Array.isArray(seasonsList) && seasonsList.length > 0) {
-          for (const s of seasonsList) {
-            const seasonNum = Number(s.seasonNumber ?? s.season ?? s.number ?? 1);
-            const season = await this.prisma.season.upsert({
-              where: {
-                seriesId_seasonNumber: {
-                  seriesId,
-                  seasonNumber: seasonNum,
-                },
-              },
-              update: {
-                name: s.name || `Season ${seasonNum}`,
-                episodeCount: (s.episodes ?? s.items ?? []).length,
-              },
-              create: {
-                seriesId,
-                seasonNumber: seasonNum,
-                name: s.name || `Season ${seasonNum}`,
-                episodeCount: (s.episodes ?? s.items ?? []).length,
-              },
-            });
-
-            const episodesList = s.episodes ?? s.items ?? [];
-            for (const ep of episodesList) {
-              const epNum = Number(ep.episodeNumber ?? ep.episode ?? ep.number ?? 1);
-              const streamLink = this.urdubox.extractEpisodeStreamLink(urduboxData, seasonNum, epNum);
-
-              await this.prisma.episode.upsert({
-                where: {
-                  seasonId_episodeNumber: {
-                    seasonId: season.id,
-                    episodeNumber: epNum,
-                  },
-                },
-                update: {
-                  title: ep.title || ep.name || `Episode ${epNum}`,
-                  videoUrl: streamLink?.url || null,
-                  upstreamId: ep.id || ep._id || null,
-                },
-                create: {
-                  seriesId,
-                  seasonId: season.id,
-                  seasonNumber: seasonNum,
-                  episodeNumber: epNum,
-                  title: ep.title || ep.name || `Episode ${epNum}`,
-                  overview: ep.overview || null,
-                  stillPath: ep.stillPath || ep.posterPath || null,
-                  videoUrl: streamLink?.url || null,
-                  upstreamId: ep.id || ep._id || null,
-                },
-              });
-            }
-          }
-          return;
-        }
-      }
-
       // Default to TMDB TV details
       const tvDetails: any = await this.tmdb.tvDetails(tmdbId);
       const totalSeasons = tvDetails?.number_of_seasons || 1;

@@ -1,14 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { ContentSource, ContentType, SyncStatus } from '@prisma/client';
 import { CacheService } from '../../common/cache/cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TmdbService } from '../tmdb/tmdb.service';
 import { ContentSyncService } from './content-sync.service';
-import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
 import { Imdb3Client } from './clients/imdb3.client';
+import { resolvePresets, SYNC_PRESETS, SyncPresetId } from './sync-presets';
 
-export type SyncRunSource = 'URDBOX' | 'MOVIESAPI' | 'IMDB3' | 'ALL';
+export type SyncRunSource = 'MOVIESAPI' | 'IMDB3' | 'ALL';
 export type SyncContentType = 'ALL' | 'MOVIES' | 'SERIES';
 
 @Injectable()
@@ -21,10 +21,10 @@ export class SyncService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly contentSync: ContentSyncService,
-    private readonly urdubox: UrduboxClient,
     private readonly moviesApi: MoviesApiClient,
     private readonly imdb3: Imdb3Client,
     private readonly cache: CacheService,
+    private readonly tmdb: TmdbService,
   ) {}
 
   async getSettings() {
@@ -40,13 +40,13 @@ export class SyncService {
       this.logger.error('Failed to get sync settings, returning safe fallback:', error);
       return {
         id: 'default',
-        urduboxEnabled: false,
         moviesApiEnabled: false,
         imdb3Enabled: true,
         automationEnabled: false,
         syncIntervalHours: 24,
         lastScheduledSyncAt: null,
         lastImdb3Id: 123290,
+        imdb3DailyCount: 20,
         scheduleStart: null,
         scheduleEnd: null,
         cronExpression: null,
@@ -58,13 +58,13 @@ export class SyncService {
   }
 
   async updateSettings(data: {
-    urduboxEnabled?: boolean;
     moviesApiEnabled?: boolean;
     imdb3Enabled?: boolean;
     automationEnabled?: boolean;
     syncIntervalHours?: number;
     lastScheduledSyncAt?: Date | null;
     lastImdb3Id?: number;
+    imdb3DailyCount?: number;
     scheduleStart?: string | null;
     scheduleEnd?: string | null;
     cronExpression?: string | null;
@@ -152,7 +152,6 @@ export class SyncService {
           syncIntervalHours: settings?.syncIntervalHours || 24,
           lastScheduledSyncAt: settings?.lastScheduledSyncAt ?? null,
           nextSyncRemainingMinutes,
-          urduboxEnabled: settings?.urduboxEnabled ?? false,
           moviesApiEnabled: settings?.moviesApiEnabled ?? false,
           imdb3Enabled: settings?.imdb3Enabled ?? true,
         },
@@ -169,7 +168,6 @@ export class SyncService {
           syncIntervalHours: 24,
           lastScheduledSyncAt: null,
           nextSyncRemainingMinutes: null,
-          urduboxEnabled: false,
           moviesApiEnabled: false,
           imdb3Enabled: true,
         },
@@ -255,6 +253,167 @@ export class SyncService {
     return { success: true, count: result.count, message: `Reset ${result.count} stalled sync jobs.` };
   }
 
+  async runFullSync(options: {
+    presets?: string[];
+    skipBroken?: boolean;
+    contentType?: SyncContentType;
+  } = {}) {
+    if (this.running) {
+      return { message: 'Sync already running', started: false };
+    }
+
+    this.running = true;
+    this.cancelRequested = false;
+    this.activeJobId = null;
+
+    const settings = await this.getSettings();
+    const presets = resolvePresets(options.presets);
+    const skipBroken = options.skipBroken !== false;
+    const contentType = options.contentType ?? 'ALL';
+
+    const job = await this.prisma.syncJob.create({
+      data: { source: ContentSource.MOVIESAPI, status: SyncStatus.RUNNING, startedAt: new Date() },
+    });
+    this.activeJobId = job.id;
+
+    let imported = 0;
+    let skipped = 0;
+    let failed = 0;
+    let working = 0;
+    let broken = 0;
+    const byPreset: Record<string, { imported: number; skipped: number; failed: number }> = {};
+    const byType: Record<string, number> = { MOVIE: 0, SERIES: 0, ANIME: 0 };
+
+    try {
+      const purge = await this.contentSync.purgeUrduBoxContent();
+      this.logger.log(`Purged UrduBox content: ${JSON.stringify(purge)}`);
+
+      for (const presetId of presets) {
+        if (this.shouldStop()) break;
+        byPreset[presetId] = { imported: 0, skipped: 0, failed: 0 };
+        const preset = SYNC_PRESETS[presetId];
+
+        for (let page = 1; page <= settings.maxPagesPerRun; page++) {
+          if (this.shouldStop()) break;
+
+          if (contentType === 'ALL' || contentType === 'MOVIES') {
+            const movieItems = await this.fetchPresetMovies(preset, page);
+            for (const item of movieItems) {
+              if (this.shouldStop()) break;
+              const tmdbId = Number(item.id);
+              if (!tmdbId) {
+                failed++;
+                byPreset[presetId].failed++;
+                continue;
+              }
+              try {
+                const result = await this.contentSync.importMovieFromPreset(tmdbId, presetId, job.id, { skipBroken });
+                if (result.imported) {
+                  imported++;
+                  byPreset[presetId].imported++;
+                  byType.MOVIE++;
+                  if (result.playbackStatus === 'WORKING') working++;
+                  else if (result.playbackStatus === 'BROKEN') broken++;
+                } else {
+                  skipped++;
+                  byPreset[presetId].skipped++;
+                }
+              } catch {
+                failed++;
+                byPreset[presetId].failed++;
+              }
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              await this.delay(500);
+            }
+            if (!movieItems.length) break;
+          }
+
+          if (contentType === 'ALL' || contentType === 'SERIES') {
+            const tvItems = await this.fetchPresetTv(preset, page);
+            for (const item of tvItems) {
+              if (this.shouldStop()) break;
+              const tmdbId = Number(item.id);
+              if (!tmdbId) {
+                failed++;
+                byPreset[presetId].failed++;
+                continue;
+              }
+              try {
+                const result = await this.contentSync.importSeriesFromPreset(tmdbId, presetId, job.id, { skipBroken });
+                if (result.imported) {
+                  imported++;
+                  byPreset[presetId].imported++;
+                  const isAnime = presetId === 'anime' || result.series?.contentType === ContentType.ANIME;
+                  byType[isAnime ? 'ANIME' : 'SERIES']++;
+                  if (result.playbackStatus === 'WORKING') working++;
+                  else if (result.playbackStatus === 'BROKEN') broken++;
+                } else {
+                  skipped++;
+                  byPreset[presetId].skipped++;
+                }
+              } catch {
+                failed++;
+                byPreset[presetId].failed++;
+              }
+              await this.updateJobProgress(job.id, imported, skipped, failed);
+              await this.delay(500);
+            }
+            if (!tvItems.length) break;
+          }
+        }
+      }
+
+      const summary = { imported, skipped, failed, working, broken, byPreset, byType, purge };
+      if (this.shouldStop()) {
+        await this.stopJob(job.id, imported, skipped, failed);
+        return { started: true, jobId: job.id, cancelled: true, summary };
+      }
+      await this.completeJob(job.id, imported, skipped, failed);
+      return { started: true, jobId: job.id, cancelled: false, summary };
+    } catch (error: any) {
+      await this.prisma.syncJob.update({
+        where: { id: job.id },
+        data: {
+          status: SyncStatus.FAILED,
+          completedAt: new Date(),
+          errorMessage: error?.message ?? 'Unknown error',
+          imported,
+          skipped,
+          failed,
+        },
+      });
+      throw error;
+    } finally {
+      this.running = false;
+      this.cancelRequested = false;
+      this.activeJobId = null;
+    }
+  }
+
+  private async fetchPresetMovies(preset: (typeof SYNC_PRESETS)[SyncPresetId], page: number) {
+    if (preset.useTrendingMovies) {
+      const res: any = await this.tmdb.trending(page);
+      return res.results ?? [];
+    }
+    if (preset.movieDiscover) {
+      const res: any = await this.tmdb.discoverMovies(preset.movieDiscover, page);
+      return res.results ?? [];
+    }
+    return [];
+  }
+
+  private async fetchPresetTv(preset: (typeof SYNC_PRESETS)[SyncPresetId], page: number) {
+    if (preset.useTrendingTv) {
+      const res: any = await this.tmdb.trendingTv(page);
+      return res.results ?? [];
+    }
+    if (preset.tvDiscover) {
+      const res: any = await this.tmdb.discoverTv(preset.tvDiscover, page);
+      return res.results ?? [];
+    }
+    return [];
+  }
+
   async runSync(source: SyncRunSource = 'ALL', contentType: SyncContentType = 'ALL') {
     if (this.running) {
       return { message: 'Sync already running', started: false };
@@ -267,11 +426,6 @@ export class SyncService {
     const results: any[] = [];
 
     try {
-      if ((source === 'URDBOX' || source === 'ALL') && settings.urduboxEnabled) {
-        if (!this.cancelRequested) {
-          results.push(await this.runUrduboxSync(settings.maxPagesPerRun, settings.resultsPerPage, contentType));
-        }
-      }
       if ((source === 'MOVIESAPI' || source === 'ALL') && settings.moviesApiEnabled) {
         if (!this.cancelRequested) {
           results.push(await this.runMoviesApiSync(settings.maxPagesPerRun, settings.resultsPerPage, contentType));
@@ -279,7 +433,7 @@ export class SyncService {
       }
       if ((source === 'IMDB3' || source === 'ALL') && settings.imdb3Enabled && contentType !== 'SERIES') {
         if (!this.cancelRequested) {
-          results.push(await this.runImdb3Sync(25));
+          results.push(await this.runImdb3Sync(settings.imdb3DailyCount ?? 20));
         }
       }
       return { started: true, results, cancelled: this.cancelRequested };
@@ -290,71 +444,8 @@ export class SyncService {
     }
   }
 
-  async startBrowserUrduboxJob() {
-    const job = await this.prisma.syncJob.create({
-      data: {
-        source: ContentSource.URDBOX,
-        status: SyncStatus.RUNNING,
-        startedAt: new Date(),
-        errorMessage: 'Browser-assisted import',
-      },
-    });
-    const bridgeToken = randomUUID();
-    await this.cache.set(`urdubox-bridge:${bridgeToken}`, { jobId: job.id }, 3600);
-    return { jobId: job.id, bridgeToken };
-  }
-
-  validateBridgeToken(token: string, jobId: string) {
-    return this.cache.get<{ jobId: string }>(`urdubox-bridge:${token}`).then((data) => data?.jobId === jobId);
-  }
-
   async getJobById(id: string) {
     return this.prisma.syncJob.findUnique({ where: { id } });
-  }
-
-  async browserImportUrduboxBatch(
-    jobId: string,
-    items: { tmdbId: number; upstreamId: string; type: 'movie' | 'series' }[] = [],
-    finalize = false,
-  ) {
-    const job = await this.prisma.syncJob.findUnique({ where: { id: jobId } });
-    if (!job || job.status !== SyncStatus.RUNNING) {
-      return { error: 'Job not found or not running', jobId };
-    }
-
-    let imported = job.imported;
-    let skipped = job.skipped;
-    let failed = job.failed;
-
-    for (const item of items ?? []) {
-      if (!item.tmdbId || !item.upstreamId) {
-        failed++;
-        continue;
-      }
-
-      try {
-        const result =
-          item.type === 'series'
-            ? await this.contentSync.importSeriesFromUrdubox(item.tmdbId, item.upstreamId, jobId)
-            : await this.contentSync.importMovieFromUrdubox(item.tmdbId, item.upstreamId, jobId);
-
-        if (result.imported) imported++;
-        else skipped++;
-      } catch {
-        failed++;
-      }
-    }
-
-    await this.prisma.syncJob.update({
-      where: { id: jobId },
-      data: { imported, skipped, failed },
-    });
-
-    if (finalize) {
-      await this.completeJob(jobId, imported, skipped, failed, 'Browser-assisted import completed');
-    }
-
-    return { jobId, imported, skipped, failed, completed: finalize };
   }
 
   private shouldStop() {
@@ -386,7 +477,14 @@ export class SyncService {
       data: { lastScheduledSyncAt: new Date() },
     });
 
-    return this.runSync('ALL');
+    if (!settings.imdb3Enabled) {
+      return { skipped: true, reason: 'imdb3_disabled' };
+    }
+
+    this.logger.log(
+      `Daily automation: scanning ${settings.imdb3DailyCount ?? 20} new IMDB3 IDs from ${settings.lastImdb3Id}`,
+    );
+    return this.runSync('IMDB3', 'MOVIES');
   }
 
   private isWithinScheduleWindow(start?: string | null, end?: string | null) {
@@ -403,122 +501,6 @@ export class SyncService {
       return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
     }
     return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
-  }
-
-  private async runUrduboxSync(maxPages: number, resultsPerPage: number, contentType: SyncContentType = 'ALL') {
-    const job = await this.prisma.syncJob.create({
-      data: { source: ContentSource.URDBOX, status: SyncStatus.RUNNING, startedAt: new Date() },
-    });
-    this.activeJobId = job.id;
-
-    let imported = 0;
-    let skipped = 0;
-    let failed = 0;
-    let blockedByUpstream = false;
-
-    try {
-      if (contentType === 'ALL' || contentType === 'MOVIES') {
-        for (let page = 1; page <= maxPages; page++) {
-          if (this.shouldStop()) break;
-          const response = await this.urdubox.discoverMovies(page, resultsPerPage);
-          const items = this.urdubox.extractItems(response);
-          if (!items.length) {
-            if (page === 1 && this.urdubox.wasLastRequestBlocked()) {
-              blockedByUpstream = true;
-            }
-            break;
-          }
-
-          for (const item of items) {
-            if (this.shouldStop()) break;
-            const tmdbId = this.urdubox.resolveTmdbId(item);
-            if (!tmdbId) {
-              failed++;
-              await this.updateJobProgress(job.id, imported, skipped, failed);
-              continue;
-            }
-
-            try {
-              const result = await this.contentSync.importMovieFromUrdubox(
-                tmdbId,
-                this.urdubox.resolveUpstreamId(item),
-                job.id,
-              );
-              if (result.imported) imported++;
-              else skipped++;
-            } catch {
-              failed++;
-            }
-            await this.updateJobProgress(job.id, imported, skipped, failed);
-          }
-
-          if (items.length < resultsPerPage) break;
-          await this.delay(500);
-        }
-      }
-
-      if (contentType === 'ALL' || contentType === 'SERIES') {
-        for (let page = 1; page <= maxPages; page++) {
-          if (this.shouldStop()) break;
-          const response = await this.urdubox.discoverTv(page, resultsPerPage);
-          const items = this.urdubox.extractItems(response);
-          if (!items.length) break;
-
-          for (const item of items) {
-            if (this.shouldStop()) break;
-            const tmdbId = this.urdubox.resolveTmdbId(item);
-            if (!tmdbId) {
-              failed++;
-              await this.updateJobProgress(job.id, imported, skipped, failed);
-              continue;
-            }
-
-            try {
-              const result = await this.contentSync.importSeriesFromUrdubox(
-                tmdbId,
-                this.urdubox.resolveUpstreamId(item),
-                job.id,
-              );
-              if (result.imported) imported++;
-              else skipped++;
-            } catch {
-              failed++;
-            }
-            await this.updateJobProgress(job.id, imported, skipped, failed);
-          }
-
-          if (items.length < resultsPerPage) break;
-          await this.delay(500);
-        }
-      }
-
-      if (this.shouldStop()) {
-        return this.stopJob(job.id, imported, skipped, failed);
-      }
-      if (blockedByUpstream && imported === 0 && skipped === 0 && failed === 0) {
-        return this.completeJob(
-          job.id,
-          imported,
-          skipped,
-          failed,
-          'Urdubox blocked server IP (403). Set URDBOX_PROXY_URL in env or import manually.',
-        );
-      }
-      return this.completeJob(job.id, imported, skipped, failed);
-    } catch (error: any) {
-      await this.prisma.syncJob.update({
-        where: { id: job.id },
-        data: {
-          status: SyncStatus.FAILED,
-          completedAt: new Date(),
-          errorMessage: error?.message ?? 'Unknown error',
-          imported,
-          skipped,
-          failed,
-        },
-      });
-      throw error;
-    }
   }
 
   private async runMoviesApiSync(maxPages: number, resultsPerPage: number, contentType: SyncContentType = 'ALL') {

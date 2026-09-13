@@ -5,14 +5,17 @@ import {
   MovieSource,
   MovieStatus,
   PlaybackMode,
+  PlaybackStatus,
   Prisma,
   SyncStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TmdbService } from '../tmdb/tmdb.service';
-import { UrduboxClient } from './clients/urdubox.client';
 import { MoviesApiClient } from './clients/movies-api.client';
 import { Imdb3Client } from './clients/imdb3.client';
+import { PlaybackVerifierService } from './playback-verifier.service';
+import { isAnimeContent } from './helpers/anime.helper';
+import { SyncPresetId } from './sync-presets';
 import { autoCategorizeMovie, autoCategorizeSeries } from '../admin/categories/category-helper';
 
 export type SyncAction = 'IMPORT' | 'SKIP';
@@ -33,10 +36,26 @@ export class ContentSyncService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tmdb: TmdbService,
-    private readonly urdubox: UrduboxClient,
     private readonly moviesApi: MoviesApiClient,
     private readonly imdb3: Imdb3Client,
+    private readonly playbackVerifier: PlaybackVerifierService,
   ) {}
+
+  async purgeUrduBoxContent() {
+    const [movies, series] = await Promise.all([
+      this.prisma.movie.deleteMany({
+        where: {
+          OR: [{ contentSource: ContentSource.URDBOX }, { playbackMode: PlaybackMode.URDBOX }],
+        },
+      }),
+      this.prisma.series.deleteMany({
+        where: {
+          OR: [{ contentSource: ContentSource.URDBOX }, { playbackMode: PlaybackMode.URDBOX }],
+        },
+      }),
+    ]);
+    return { moviesDeleted: movies.count, seriesDeleted: series.count };
+  }
 
   async checkContent(tmdbId: number, contentType: ContentType = ContentType.MOVIE): Promise<SyncDecision> {
     return this.shouldImport(tmdbId, contentType);
@@ -76,154 +95,28 @@ export class ContentSyncService {
     };
   }
 
-  async checkUrduboxAvailability(tmdbId: number, contentType: ContentType) {
-    if (!this.urdubox.isEnabled()) {
-      return { available: false, upstreamId: null as string | null };
-    }
-
-    const response =
-      contentType === ContentType.MOVIE
-        ? await this.urdubox.findMovieByTmdbId(tmdbId)
-        : await this.urdubox.findSeriesByTmdbId(tmdbId);
-
-    const items = this.urdubox.extractItems(response);
-    const match = items.find((item) => this.urdubox.resolveTmdbId(item) === tmdbId) ?? items[0];
-
-    if (!match) {
-      return { available: false, upstreamId: null as string | null };
-    }
-
-    return {
-      available: true,
-      upstreamId: this.urdubox.resolveUpstreamId(match),
-    };
-  }
-
-  async importMovieFromUrdubox(
+  async importMovieFromMoviesApi(
     tmdbId: number,
-    upstreamId?: string | null,
     jobId?: string,
+    options: { syncPreset?: SyncPresetId; skipBroken?: boolean } = {},
   ) {
-    const decision = await this.shouldImport(tmdbId, ContentType.MOVIE);
-    if (decision.action === 'SKIP') {
-      if (jobId) await this.logEntry(jobId, tmdbId, null, decision.existingTitle, 'SKIPPED', decision.reason, ContentType.MOVIE);
-      return { ...decision, imported: false };
-    }
-
-    try {
-      const details: any = await this.tmdb.movieDetails(tmdbId);
-      const resolvedUpstreamId = upstreamId ?? (await this.checkUrduboxAvailability(tmdbId, ContentType.MOVIE)).upstreamId;
-
-      const trailer = details.videos?.results?.find(
-        (v: any) => v.site === 'YouTube' && v.type === 'Trailer',
-      );
-
-      const movie = await this.prisma.movie.create({
-        data: {
-          tmdbId,
-          title: details.title,
-          originalTitle: details.original_title,
-          overview: details.overview,
-          posterPath: details.poster_path,
-          backdropPath: details.backdrop_path,
-          releaseDate: details.release_date ? new Date(details.release_date) : null,
-          runtime: details.runtime,
-          rating: details.vote_average,
-          voteCount: details.vote_count,
-          language: details.original_language,
-          trailerKey: trailer?.key,
-          status: MovieStatus.ACTIVE,
-          source: MovieSource.TMDB,
-          contentSource: ContentSource.URDBOX,
-          playbackMode: PlaybackMode.URDBOX,
-          upstreamId: resolvedUpstreamId,
-          upstreamSyncedAt: new Date(),
-        },
-      });
-
-      await this.syncMovieRelations(movie.id, details);
-
-      if (jobId) {
-        await this.logEntry(jobId, tmdbId, resolvedUpstreamId, movie.title, 'IMPORTED', 'new', ContentType.MOVIE);
-      }
-
-      return {
-        action: 'IMPORT' as SyncAction,
-        reason: 'new',
-        message: 'Urdubox se import ho gaya',
-        imported: true,
-        movie,
-      };
-    } catch (error) {
-      this.logger.error(`Urdubox import failed for tmdbId ${tmdbId}`, error);
-      if (jobId) await this.logEntry(jobId, tmdbId, upstreamId ?? null, null, 'FAILED', 'import_error', ContentType.MOVIE);
-      throw error;
-    }
+    return this.importMovieFromPreset(tmdbId, options.syncPreset ?? 'trending', jobId, options);
   }
 
-  async importSeriesFromUrdubox(
+  async importSeriesFromMoviesApi(
     tmdbId: number,
-    upstreamId?: string | null,
     jobId?: string,
+    options: { syncPreset?: SyncPresetId; skipBroken?: boolean } = {},
   ) {
-    const decision = await this.shouldImport(tmdbId, ContentType.SERIES);
-    if (decision.action === 'SKIP') {
-      if (jobId) await this.logEntry(jobId, tmdbId, null, decision.existingTitle, 'SKIPPED', decision.reason, ContentType.SERIES);
-      return { ...decision, imported: false };
-    }
-
-    try {
-      const details: any = await this.tmdb.tvDetails(tmdbId);
-      const resolvedUpstreamId = upstreamId ?? (await this.checkUrduboxAvailability(tmdbId, ContentType.SERIES)).upstreamId;
-
-      const series = await this.prisma.series.create({
-        data: {
-          tmdbId,
-          title: details.name,
-          originalTitle: details.original_name,
-          overview: details.overview,
-          posterPath: details.poster_path,
-          backdropPath: details.backdrop_path,
-          firstAirDate: details.first_air_date ? new Date(details.first_air_date) : null,
-          lastAirDate: details.last_air_date ? new Date(details.last_air_date) : null,
-          numberOfSeasons: details.number_of_seasons,
-          numberOfEpisodes: details.number_of_episodes,
-          rating: details.vote_average,
-          voteCount: details.vote_count,
-          language: details.original_language,
-          status: MovieStatus.ACTIVE,
-          contentSource: ContentSource.URDBOX,
-          playbackMode: PlaybackMode.URDBOX,
-          upstreamId: resolvedUpstreamId,
-          upstreamSyncedAt: new Date(),
-        },
-      });
-
-      await this.syncSeriesRelations(series.id, details);
-      if (resolvedUpstreamId) {
-        await this.syncUrduboxSeriesEpisodes(series.id, resolvedUpstreamId);
-      }
-      await autoCategorizeSeries(this.prisma, series.id);
-
-      if (jobId) {
-        await this.logEntry(jobId, tmdbId, resolvedUpstreamId, series.title, 'IMPORTED', 'new', ContentType.SERIES);
-      }
-
-      return {
-        action: 'IMPORT' as SyncAction,
-        reason: 'new',
-        message: 'Urdubox se series import ho gayi',
-        imported: true,
-        series,
-      };
-    } catch (error) {
-      this.logger.error(`Urdubox series import failed for tmdbId ${tmdbId}`, error);
-      if (jobId) await this.logEntry(jobId, tmdbId, upstreamId ?? null, null, 'FAILED', 'import_error', ContentType.SERIES);
-      throw error;
-    }
+    return this.importSeriesFromPreset(tmdbId, options.syncPreset ?? 'trending', jobId, options);
   }
 
-  async importMovieFromMoviesApi(tmdbId: number, jobId?: string) {
+  async importMovieFromPreset(
+    tmdbId: number,
+    syncPreset: SyncPresetId,
+    jobId?: string,
+    options: { skipBroken?: boolean } = {},
+  ) {
     const decision = await this.shouldImport(tmdbId, ContentType.MOVIE);
     if (decision.action === 'SKIP') {
       if (jobId) await this.logEntry(jobId, tmdbId, null, decision.existingTitle, 'SKIPPED', decision.reason, ContentType.MOVIE);
@@ -235,6 +128,26 @@ export class ContentSyncService {
       const trailer = details.videos?.results?.find(
         (v: any) => v.site === 'YouTube' && v.type === 'Trailer',
       );
+
+      const isAnime = isAnimeContent({
+        original_language: details.original_language,
+        origin_country: details.origin_country,
+        genres: details.genres,
+      });
+
+      const playbackStatus = await this.playbackVerifier.verify({
+        contentType: isAnime ? ContentType.ANIME : ContentType.MOVIE,
+        tmdbId,
+        title: details.title,
+        language: details.original_language,
+        genres: details.genres,
+        playbackMode: PlaybackMode.EMBED,
+      });
+
+      if (options.skipBroken !== false && playbackStatus === PlaybackStatus.BROKEN) {
+        if (jobId) await this.logEntry(jobId, tmdbId, null, details.title, 'SKIPPED', 'playback_broken', ContentType.MOVIE);
+        return { action: 'SKIP' as SyncAction, reason: 'playback_broken', message: 'Playback unavailable', imported: false };
+      }
 
       const movie = await this.prisma.movie.create({
         data: {
@@ -254,31 +167,41 @@ export class ContentSyncService {
           source: MovieSource.TMDB,
           contentSource: ContentSource.MOVIESAPI,
           playbackMode: PlaybackMode.EMBED,
+          playbackStatus,
+          playbackCheckedAt: new Date(),
+          syncPreset,
           upstreamSyncedAt: new Date(),
         },
       });
 
       await this.syncMovieRelations(movie.id, details);
+      await autoCategorizeMovie(this.prisma, movie.id);
 
       if (jobId) {
-        await this.logEntry(jobId, tmdbId, null, movie.title, 'IMPORTED', 'new', ContentType.MOVIE);
+        await this.logEntry(jobId, tmdbId, null, movie.title, 'IMPORTED', syncPreset, ContentType.MOVIE);
       }
 
       return {
         action: 'IMPORT' as SyncAction,
         reason: 'new',
-        message: 'MoviesAPI embed se import ho gaya',
+        message: 'Movie import ho gayi',
         imported: true,
+        playbackStatus,
         movie,
       };
     } catch (error) {
-      this.logger.error(`MoviesAPI import failed for tmdbId ${tmdbId}`, error);
+      this.logger.error(`Movie import failed for tmdbId ${tmdbId}`, error);
       if (jobId) await this.logEntry(jobId, tmdbId, null, null, 'FAILED', 'import_error', ContentType.MOVIE);
       throw error;
     }
   }
 
-  async importSeriesFromMoviesApi(tmdbId: number, jobId?: string) {
+  async importSeriesFromPreset(
+    tmdbId: number,
+    syncPreset: SyncPresetId,
+    jobId?: string,
+    options: { skipBroken?: boolean } = {},
+  ) {
     const decision = await this.shouldImport(tmdbId, ContentType.SERIES);
     if (decision.action === 'SKIP') {
       if (jobId) await this.logEntry(jobId, tmdbId, null, decision.existingTitle, 'SKIPPED', decision.reason, ContentType.SERIES);
@@ -287,6 +210,27 @@ export class ContentSyncService {
 
     try {
       const details: any = await this.tmdb.tvDetails(tmdbId);
+      const isAnime =
+        syncPreset === 'anime' ||
+        isAnimeContent({
+          original_language: details.original_language,
+          origin_country: details.origin_country,
+          genres: details.genres,
+        });
+
+      const playbackStatus = await this.playbackVerifier.verify({
+        contentType: isAnime ? ContentType.ANIME : ContentType.SERIES,
+        tmdbId,
+        title: details.name,
+        language: details.original_language,
+        genres: details.genres,
+        playbackMode: PlaybackMode.EMBED,
+      });
+
+      if (options.skipBroken !== false && playbackStatus === PlaybackStatus.BROKEN) {
+        if (jobId) await this.logEntry(jobId, tmdbId, null, details.name, 'SKIPPED', 'playback_broken', ContentType.SERIES);
+        return { action: 'SKIP' as SyncAction, reason: 'playback_broken', message: 'Playback unavailable', imported: false };
+      }
 
       const series = await this.prisma.series.create({
         data: {
@@ -304,8 +248,12 @@ export class ContentSyncService {
           voteCount: details.vote_count,
           language: details.original_language,
           status: MovieStatus.ACTIVE,
+          contentType: isAnime ? ContentType.ANIME : ContentType.SERIES,
           contentSource: ContentSource.MOVIESAPI,
           playbackMode: PlaybackMode.EMBED,
+          playbackStatus,
+          playbackCheckedAt: new Date(),
+          syncPreset,
           upstreamSyncedAt: new Date(),
         },
       });
@@ -315,21 +263,67 @@ export class ContentSyncService {
       await autoCategorizeSeries(this.prisma, series.id);
 
       if (jobId) {
-        await this.logEntry(jobId, tmdbId, null, series.title, 'IMPORTED', 'new', ContentType.SERIES);
+        await this.logEntry(jobId, tmdbId, null, series.title, 'IMPORTED', syncPreset, isAnime ? ContentType.ANIME : ContentType.SERIES);
       }
 
       return {
         action: 'IMPORT' as SyncAction,
         reason: 'new',
-        message: 'MoviesAPI embed se series import ho gayi',
+        message: 'Series import ho gayi',
         imported: true,
+        playbackStatus,
         series,
       };
     } catch (error) {
-      this.logger.error(`MoviesAPI series import failed for tmdbId ${tmdbId}`, error);
+      this.logger.error(`Series import failed for tmdbId ${tmdbId}`, error);
       if (jobId) await this.logEntry(jobId, tmdbId, null, null, 'FAILED', 'import_error', ContentType.SERIES);
       throw error;
     }
+  }
+
+  async recheckMoviePlayback(movieId: string) {
+    const movie = await this.prisma.movie.findUnique({
+      where: { id: movieId },
+      include: { genres: { include: { genre: true } } },
+    });
+    if (!movie) return null;
+
+    const playbackStatus = await this.playbackVerifier.verify({
+      contentType: ContentType.MOVIE,
+      tmdbId: movie.tmdbId,
+      title: movie.title,
+      language: movie.language,
+      genres: movie.genres.map((g) => ({ id: g.genre.tmdbId ?? 0 })),
+      playbackMode: movie.playbackMode,
+      videoUrl: movie.videoUrl,
+    });
+
+    return this.prisma.movie.update({
+      where: { id: movieId },
+      data: { playbackStatus, playbackCheckedAt: new Date() },
+    });
+  }
+
+  async recheckSeriesPlayback(seriesId: string) {
+    const series = await this.prisma.series.findUnique({
+      where: { id: seriesId },
+      include: { genres: { include: { genre: true } } },
+    });
+    if (!series) return null;
+
+    const playbackStatus = await this.playbackVerifier.verify({
+      contentType: series.contentType,
+      tmdbId: series.tmdbId,
+      title: series.title,
+      language: series.language,
+      genres: series.genres.map((g) => ({ id: g.genre.tmdbId ?? 0 })),
+      playbackMode: series.playbackMode,
+    });
+
+    return this.prisma.series.update({
+      where: { id: seriesId },
+      data: { playbackStatus, playbackCheckedAt: new Date() },
+    });
   }
 
   async importMovieFromImdb3(id: number | string, jobId?: string) {
@@ -566,89 +560,64 @@ export class ContentSyncService {
     }
   }
 
-  private async syncUrduboxSeriesEpisodes(seriesId: string, upstreamId: string) {
-    try {
-      const urduboxData = await this.urdubox.getSeriesPublic(upstreamId);
-      const seasons = urduboxData?.seasons ?? urduboxData?.data?.seasons ?? [];
-
-      for (const s of seasons) {
-        const seasonNum = Number(s.seasonNumber ?? s.season ?? s.number ?? 1);
-        const episodes = s.episodes ?? s.items ?? [];
-
-        const season = await this.prisma.season.upsert({
-          where: { seriesId_seasonNumber: { seriesId, seasonNumber: seasonNum } },
-          update: {
-            name: s.name || `Season ${seasonNum}`,
-            episodeCount: episodes.length,
-          },
-          create: {
-            seriesId,
-            seasonNumber: seasonNum,
-            name: s.name || `Season ${seasonNum}`,
-            episodeCount: episodes.length,
-          },
-        });
-
-        for (const ep of episodes) {
-          const epNum = Number(ep.episodeNumber ?? ep.episode ?? ep.number ?? 1);
-          const streamLink = this.urdubox.extractEpisodeStreamLink(urduboxData, seasonNum, epNum);
-
-          await this.prisma.episode.upsert({
-            where: { seasonId_episodeNumber: { seasonId: season.id, episodeNumber: epNum } },
-            update: {
-              title: ep.title || ep.name || `Episode ${epNum}`,
-              videoUrl: streamLink?.url || null,
-              upstreamId: ep.id || ep._id || null,
-            },
-            create: {
-              seriesId,
-              seasonId: season.id,
-              seasonNumber: seasonNum,
-              episodeNumber: epNum,
-              title: ep.title || ep.name || `Episode ${epNum}`,
-              overview: ep.overview || null,
-              stillPath: ep.stillPath || ep.posterPath || null,
-              videoUrl: streamLink?.url || null,
-              upstreamId: ep.id || ep._id || null,
-            },
-          });
-        }
-      }
-    } catch (err) {
-      this.logger.warn(`Failed to sync episodes from UrduBox for series ${seriesId}: ${err}`);
-    }
-  }
-
   private async syncTmdbSeriesEpisodes(seriesId: string, tmdbId: number, details: any) {
     try {
-      const totalSeasons = details.number_of_seasons || 1;
-      for (let sNum = 1; sNum <= Math.min(totalSeasons, 10); sNum++) {
+      const totalSeasons = Math.min(details.number_of_seasons || 1, 10);
+      for (let sNum = 1; sNum <= totalSeasons; sNum++) {
+        let seasonData: any = null;
+        try {
+          seasonData = await this.tmdb.tvSeasonDetails(tmdbId, sNum);
+        } catch {
+          seasonData = null;
+        }
+
+        const episodes = seasonData?.episodes ?? [];
         const season = await this.prisma.season.upsert({
           where: { seriesId_seasonNumber: { seriesId, seasonNumber: sNum } },
-          update: {},
+          update: {
+            name: seasonData?.name || `Season ${sNum}`,
+            episodeCount: episodes.length || seasonData?.episodes?.length || 0,
+            posterPath: seasonData?.poster_path || null,
+            overview: seasonData?.overview || null,
+          },
           create: {
             seriesId,
             seasonNumber: sNum,
-            name: `Season ${sNum}`,
-            episodeCount: Math.min(details.number_of_episodes || 12, 24),
+            name: seasonData?.name || `Season ${sNum}`,
+            episodeCount: episodes.length || 0,
+            posterPath: seasonData?.poster_path || null,
+            overview: seasonData?.overview || null,
           },
         });
 
-        const epCount = Math.min(Math.round((details.number_of_episodes || 12) / totalSeasons) || 10, 24);
-        for (let epNum = 1; epNum <= epCount; epNum++) {
-          await this.prisma.episode.upsert({
-            where: { seasonId_episodeNumber: { seasonId: season.id, episodeNumber: epNum } },
-            update: {},
-            create: {
-              seriesId,
-              seasonId: season.id,
-              seasonNumber: sNum,
-              episodeNumber: epNum,
-              title: `Episode ${epNum}`,
-              overview: `Season ${sNum}, Episode ${epNum} of ${details.name || 'Series'}`,
-              stillPath: details.backdrop_path,
-            },
-          });
+        if (episodes.length) {
+          for (const ep of episodes) {
+            const epNum = Number(ep.episode_number);
+            if (!epNum) continue;
+            await this.prisma.episode.upsert({
+              where: { seasonId_episodeNumber: { seasonId: season.id, episodeNumber: epNum } },
+              update: {
+                title: ep.name || `Episode ${epNum}`,
+                overview: ep.overview || null,
+                stillPath: ep.still_path || null,
+                airDate: ep.air_date ? new Date(ep.air_date) : null,
+                runtime: ep.runtime || null,
+                voteAverage: ep.vote_average || null,
+              },
+              create: {
+                seriesId,
+                seasonId: season.id,
+                seasonNumber: sNum,
+                episodeNumber: epNum,
+                title: ep.name || `Episode ${epNum}`,
+                overview: ep.overview || null,
+                stillPath: ep.still_path || null,
+                airDate: ep.air_date ? new Date(ep.air_date) : null,
+                runtime: ep.runtime || null,
+                voteAverage: ep.vote_average || null,
+              },
+            });
+          }
         }
       }
     } catch (err) {
@@ -694,31 +663,13 @@ export class ContentSyncService {
       };
     }
 
-    if (movie.playbackMode === PlaybackMode.EMBED && movie.tmdbId) {
-      return {
-        mode: PlaybackMode.EMBED,
-        available: true,
-        source: ContentSource.MOVIESAPI,
-        playerUrl: this.moviesApi.buildMovieEmbedPath(movie.tmdbId),
-      };
-    }
-
-    if (movie.playbackMode === PlaybackMode.URDBOX && movie.tmdbId) {
-      return {
-        mode: PlaybackMode.URDBOX,
-        available: true,
-        source: ContentSource.URDBOX,
-        playerUrl: `/api/stream/movie/${movie.tmdbId}/playlist.m3u8`,
-        hlsUrl: `/api/stream/movie/${movie.tmdbId}/playlist.m3u8`,
-      };
-    }
-
     if (movie.tmdbId) {
       return {
         mode: PlaybackMode.EMBED,
         available: true,
         source: ContentSource.MOVIESAPI,
         playerUrl: this.moviesApi.buildMovieEmbedPath(movie.tmdbId),
+        sourcesUrl: `/api/player/sources/movie/${movie.tmdbId}`,
       };
     }
 
@@ -748,14 +699,13 @@ export class ContentSyncService {
       };
     }
 
-    if (series.playbackMode === PlaybackMode.URDBOX && series.tmdbId) {
-      const path = `/api/stream/tv/${series.tmdbId}/${season}/${episode}/playlist.m3u8`;
+    if (series.tmdbId) {
       return {
-        mode: PlaybackMode.URDBOX,
+        mode: PlaybackMode.EMBED,
         available: true,
-        source: ContentSource.URDBOX,
-        playerUrl: path,
-        hlsUrl: path,
+        source: ContentSource.MOVIESAPI,
+        playerUrl: this.moviesApi.buildTvEmbedPath(series.tmdbId, season, episode),
+        sourcesUrl: `/api/player/sources/tv/${series.tmdbId}/${season}/${episode}`,
       };
     }
 

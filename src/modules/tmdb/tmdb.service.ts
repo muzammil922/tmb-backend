@@ -110,4 +110,20 @@ export class TmdbService {
   discoverByGenre(genreId: number, page = 1) {
     return this.request('/discover/movie', { with_genres: genreId, page, sort_by: 'popularity.desc' }, 3600);
   }
+
+  discoverMovies(params: Record<string, string | number>, page = 1) {
+    return this.request('/discover/movie', { ...params, page }, 3600);
+  }
+
+  discoverTv(params: Record<string, string | number>, page = 1) {
+    return this.request('/discover/tv', { ...params, page }, 3600);
+  }
+
+  trendingTv(page = 1) {
+    return this.request('/trending/tv/week', { page }, 3600);
+  }
+
+  tvSeasonDetails(tmdbId: number, season: number) {
+    return this.request(`/tv/${tmdbId}/season/${season}`, {}, 86400);
+  }
 }

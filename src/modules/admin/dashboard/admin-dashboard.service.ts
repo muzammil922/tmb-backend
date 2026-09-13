@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ContentType, PlaybackStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 
 @Injectable()
@@ -6,9 +7,30 @@ export class AdminDashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getStats() {
-    const [totalUsers, totalMovies, activeUsers, totalWatchHistory] = await Promise.all([
+    const [
+      totalUsers,
+      totalMovies,
+      totalSeries,
+      totalAnime,
+      workingCount,
+      brokenCount,
+      pendingCount,
+      activeUsers,
+      totalWatchHistory,
+    ] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.movie.count(),
+      this.prisma.series.count({ where: { contentType: ContentType.SERIES } }),
+      this.prisma.series.count({ where: { contentType: ContentType.ANIME } }),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.WORKING } }).then((m) =>
+        this.prisma.series.count({ where: { playbackStatus: PlaybackStatus.WORKING } }).then((s) => m + s),
+      ),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.BROKEN } }).then((m) =>
+        this.prisma.series.count({ where: { playbackStatus: PlaybackStatus.BROKEN } }).then((s) => m + s),
+      ),
+      this.prisma.movie.count({ where: { playbackStatus: PlaybackStatus.PENDING } }).then((m) =>
+        this.prisma.series.count({ where: { playbackStatus: PlaybackStatus.PENDING } }).then((s) => m + s),
+      ),
       this.prisma.user.count({ where: { status: 'ACTIVE' } }),
       this.prisma.watchHistory.count(),
     ]);
@@ -28,6 +50,11 @@ export class AdminDashboardService {
     return {
       totalUsers,
       totalMovies,
+      totalSeries,
+      totalAnime,
+      workingCount,
+      brokenCount,
+      pendingCount,
       activeUsers,
       totalWatchHistory,
       recentUsers,

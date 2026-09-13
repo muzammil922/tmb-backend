@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Header, Param, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { MoviesService } from './movies.service';
 
@@ -8,11 +8,13 @@ export class MoviesController {
   constructor(private readonly moviesService: MoviesService) {}
 
   @Get('trending')
+  @Header('Cache-Control', 'public, max-age=120, stale-while-revalidate=600')
   trending(@Query('page') page = '1', @Query('limit') limit = '48') {
     return this.moviesService.getList('trending', Number(page), Number(limit));
   }
 
   @Get('popular')
+  @Header('Cache-Control', 'public, max-age=120, stale-while-revalidate=600')
   popular(@Query('page') page = '1', @Query('limit') limit = '48') {
     return this.moviesService.getList('popular', Number(page), Number(limit));
   }
@@ -58,6 +60,7 @@ export class MoviesController {
   }
 
   @Get(':id')
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   findOne(@Param('id') id: string) {
     return this.moviesService.findOne(id);
   }
