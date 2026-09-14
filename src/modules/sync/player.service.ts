@@ -119,6 +119,74 @@ export class PlayerService {
     return payload;
   }
 
+  async renderCleanMovieEmbed(tmdbId: number): Promise<string> {
+    const upstreamUrl = `https://www.vidking.net/embed/movie/${tmdbId}?autoPlay=true`;
+    try {
+      const response = await firstValueFrom(
+        this.http.get(upstreamUrl, {
+          timeout: 8000,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
+          responseType: 'text',
+        }),
+      );
+      const html = String(response.data || '');
+      if (html.includes('<head>')) {
+        const injected = `<base href="https://www.vidking.net/">
+<script>
+  try {
+    sessionStorage.setItem("adsEnabled", "false");
+    window.open = function() { return null; };
+  } catch(e) {}
+</script>`;
+        return html.replace('<head>', '<head>' + injected);
+      }
+      return html;
+    } catch {
+      return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stream Player</title>
+<style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style>
+</head><body><iframe src="${upstreamUrl}" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe></body></html>`;
+    }
+  }
+
+  async renderCleanTvEmbed(tmdbId: number, season: number, episode: number): Promise<string> {
+    const upstreamUrl = `https://www.vidking.net/embed/tv/${tmdbId}/${season}/${episode}?autoPlay=true`;
+    try {
+      const response = await firstValueFrom(
+        this.http.get(upstreamUrl, {
+          timeout: 8000,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
+          responseType: 'text',
+        }),
+      );
+      const html = String(response.data || '');
+      if (html.includes('<head>')) {
+        const injected = `<base href="https://www.vidking.net/">
+<script>
+  try {
+    sessionStorage.setItem("adsEnabled", "false");
+    window.open = function() { return null; };
+  } catch(e) {}
+</script>`;
+        return html.replace('<head>', '<head>' + injected);
+      }
+      return html;
+    } catch {
+      return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stream Player</title>
+<style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style>
+</head><body><iframe src="${upstreamUrl}" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe></body></html>`;
+    }
+  }
+
   buildUpstreamMovieEmbedUrl(tmdbId: number) {
     return this.embedSources.buildUpstreamMovieEmbedUrl(tmdbId);
   }

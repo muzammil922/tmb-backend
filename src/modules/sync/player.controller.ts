@@ -58,29 +58,21 @@ export class PlayerController {
   }
 
   @Get('embed/movie/:tmdbId')
-  embedMovie(@Param('tmdbId') tmdbId: string, @Res() res: Response) {
-    const upstream = this.player.buildUpstreamMovieEmbedUrl(Number(tmdbId));
+  async embedMovie(@Param('tmdbId') tmdbId: string, @Res() res: Response) {
+    const html = await this.player.renderCleanMovieEmbed(Number(tmdbId));
     res.setHeader('Content-Type', 'text/html');
-    res.send(this.buildEmbedHtml(upstream));
+    res.send(html);
   }
 
   @Get('embed/tv/:tmdbId/:season/:episode')
-  embedTv(
+  async embedTv(
     @Param('tmdbId') tmdbId: string,
     @Param('season') season: string,
     @Param('episode') episode: string,
     @Res() res: Response,
   ) {
-    const upstream = this.player.buildUpstreamTvEmbedUrl(Number(tmdbId), Number(season), Number(episode));
+    const html = await this.player.renderCleanTvEmbed(Number(tmdbId), Number(season), Number(episode));
     res.setHeader('Content-Type', 'text/html');
-    res.send(this.buildEmbedHtml(upstream));
-  }
-
-  private buildEmbedHtml(src: string) {
-    return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TMB Player</title>
-<style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style>
-</head><body><iframe src="${src}" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe></body></html>`;
+    res.send(html);
   }
 }
