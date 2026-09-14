@@ -45,33 +45,33 @@ export class EmbedSources {
   getMovieSources(tmdbId: number): PlaybackSource[] {
     const sources: PlaybackSource[] = [];
 
-    // 1. Primary fast stream: Videasy
-    if (this.videasyEnabled) {
-      sources.push({
-        id: 'videasy',
-        name: 'Server 1 (Fast Stream)',
-        type: 'embed',
-        url: `https://player.videasy.to/movie/${tmdbId}?overlay=true`,
-      });
-    }
-
-    // 2. Secondary backup: Vidking
+    // 1. Primary reliable stream: Vidking
     if (this.vidkingEnabled) {
       sources.push({
         id: 'vidking',
-        name: 'Server 2 (HD Stream)',
+        name: 'Server 1 (HD Stream)',
         type: 'embed',
         url: `https://www.vidking.net/embed/movie/${tmdbId}?autoPlay=true`,
       });
     }
 
-    // 3. Resilient fallback: Vidsrc
+    // 2. Secondary backup: Vidsrc
     if (this.vidsrcEnabled) {
       sources.push({
         id: 'vidsrc',
-        name: 'Server 3 (Direct Cloud)',
+        name: 'Server 2 (Direct Cloud)',
         type: 'embed',
         url: `https://vidsrc.cc/v2/embed/movie/${tmdbId}`,
+      });
+    }
+
+    // 3. Fallback: Videasy
+    if (this.videasyEnabled) {
+      sources.push({
+        id: 'videasy',
+        name: 'Server 3 (Fast Stream)',
+        type: 'embed',
+        url: `https://player.videasy.to/movie/${tmdbId}?overlay=true`,
       });
     }
 
@@ -91,33 +91,33 @@ export class EmbedSources {
   getTvSources(tmdbId: number, season: number, episode: number): PlaybackSource[] {
     const sources: PlaybackSource[] = [];
 
-    // 1. Primary fast stream: Videasy
-    if (this.videasyEnabled) {
-      sources.push({
-        id: 'videasy',
-        name: 'Server 1 (Fast Stream)',
-        type: 'embed',
-        url: `https://player.videasy.to/tv/${tmdbId}/${season}/${episode}?overlay=true`,
-      });
-    }
-
-    // 2. Secondary backup: Vidking
+    // 1. Primary reliable stream: Vidking
     if (this.vidkingEnabled) {
       sources.push({
         id: 'vidking',
-        name: 'Server 2 (HD Stream)',
+        name: 'Server 1 (HD Stream)',
         type: 'embed',
         url: `https://www.vidking.net/embed/tv/${tmdbId}/${season}/${episode}?autoPlay=true`,
       });
     }
 
-    // 3. Resilient fallback: Vidsrc
+    // 2. Secondary backup: Vidsrc
     if (this.vidsrcEnabled) {
       sources.push({
         id: 'vidsrc',
-        name: 'Server 3 (Direct Cloud)',
+        name: 'Server 2 (Direct Cloud)',
         type: 'embed',
         url: `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`,
+      });
+    }
+
+    // 3. Fallback: Videasy
+    if (this.videasyEnabled) {
+      sources.push({
+        id: 'videasy',
+        name: 'Server 3 (Fast Stream)',
+        type: 'embed',
+        url: `https://player.videasy.to/tv/${tmdbId}/${season}/${episode}?overlay=true`,
       });
     }
 
