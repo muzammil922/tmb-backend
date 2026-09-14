@@ -25,15 +25,33 @@ export class PlayerService {
     this.embedSources = new EmbedSources(config);
   }
 
-  getMovieSources(tmdbId: number) {
-    return {
+  async getMovieSources(tmdbId: number) {
+    const cacheKey = `player:sources:movie:${tmdbId}`;
+    const cached = await this.cache.get<{ tmdbId: number; type: string; sources: PlaybackSource[] }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const candidateSources = this.embedSources.getMovieSources(tmdbId);
+    const verifiedSources = await this.probeAndSortSources(candidateSources);
+
+    const payload = {
       tmdbId,
       type: 'movie',
-      sources: this.embedSources.getMovieSources(tmdbId),
+      sources: verifiedSources,
     };
+
+    await this.cache.set(cacheKey, payload, 1800);
+    return payload;
   }
 
-  getTvSources(tmdbId: number, season: number, episode: number, options?: { isAnime?: boolean; title?: string }) {
+  async getTvSources(tmdbId: number, season: number, episode: number, options?: { isAnime?: boolean; title?: string }) {
+    const cacheKey = `player:sources:tv:${tmdbId}:${season}:${episode}:${options?.isAnime ? 'anime' : 'tv'}`;
+    const cached = await this.cache.get<{ tmdbId: number; season: number; episode: number; isAnime: boolean; sources: PlaybackSource[] }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const sources: PlaybackSource[] = [];
 
     if (options?.isAnime && this.allManga.isEnabled() && options.title) {
@@ -50,18 +68,29 @@ export class PlayerService {
       });
     }
 
-    sources.push(...this.embedSources.getTvSources(tmdbId, season, episode));
+    const candidateSources = this.embedSources.getTvSources(tmdbId, season, episode);
+    const verifiedSources = await this.probeAndSortSources(candidateSources);
+    sources.push(...verifiedSources);
 
-    return {
+    const payload = {
       tmdbId,
       season,
       episode,
       isAnime: !!options?.isAnime,
       sources,
     };
+
+    await this.cache.set(cacheKey, payload, 1800);
+    return payload;
   }
 
-  getAnimeMovieSources(tmdbId: number, title: string) {
+  async getAnimeMovieSources(tmdbId: number, title: string) {
+    const cacheKey = `player:sources:anime-movie:${tmdbId}`;
+    const cached = await this.cache.get<{ tmdbId: number; type: string; isAnime: boolean; sources: PlaybackSource[] }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const sources: PlaybackSource[] = [];
 
     if (this.allManga.isEnabled()) {
@@ -74,14 +103,86 @@ export class PlayerService {
       });
     }
 
-    sources.push(...this.embedSources.getMovieSources(tmdbId));
+    const candidateSources = this.embedSources.getMovieSources(tmdbId);
+    const verifiedSources = await this.probeAndSortSources(candidateSources);
+    sources.push(...verifiedSources);
 
-    return {
+    const payload = {
       tmdbId,
       type: 'movie',
       isAnime: true,
       sources,
     };
+
+    await this.cache.set(cacheKey, payload, 1800);
+    return payload;
+  }
+
+  private async probeAndSortSources(sources: PlaybackSource[]): Promise<PlaybackSource[]> {
+    try {
+      const checks = await Promise.allSettled(
+        sources.map(async (source) => {
+          let targetUrl = source.url;
+          if (targetUrl.startsWith('/api/player/embed/movie/')) {
+            const id = targetUrl.replace('/api/player/embed/movie/', '');
+            targetUrl = `https://www.vidking.net/embed/movie/${id}`;
+          } else if (targetUrl.startsWith('/api/player/embed/tv/')) {
+            const parts = targetUrl.replace('/api/player/embed/tv/', '').split('/');
+            targetUrl = `https://www.vidking.net/embed/tv/${parts[0]}/${parts[1]}/${parts[2]}`;
+          }
+
+          if (!targetUrl.startsWith('http')) {
+            return { source, ok: true, time: 20 };
+          }
+
+          const start = Date.now();
+          const response = await firstValueFrom(
+            this.http.head(targetUrl, {
+              timeout: 1800,
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              },
+              validateStatus: (status) => status < 400,
+            }),
+          );
+          return { source, ok: response.status < 400, time: Date.now() - start };
+        }),
+      );
+
+      const successful: { source: PlaybackSource; time: number }[] = [];
+      const failed: PlaybackSource[] = [];
+
+      checks.forEach((result, idx) => {
+        if (result.status === 'fulfilled' && result.value.ok) {
+          successful.push({ source: result.value.source, time: result.value.time });
+        } else {
+          failed.push(sources[idx]);
+        }
+      });
+
+      // Keep Server 1 (Ad-Free HD) first if online, then sort remaining by ping speed
+      const sorted = successful
+        .sort((a, b) => {
+          if (a.source.id === 'vidking-clean') return -1;
+          if (b.source.id === 'vidking-clean') return 1;
+          return a.time - b.time;
+        })
+        .map((item) => item.source);
+
+      // Re-number neatly as Server 1, Server 2, etc.
+      const finalSources = [...sorted, ...failed].map((src, i) => {
+        const cleanName = src.name.replace(/^Server \d+ /, '');
+        return {
+          ...src,
+          name: `Server ${i + 1} ${cleanName}`,
+        };
+      });
+
+      return finalSources;
+    } catch {
+      return sources;
+    }
   }
 
   async resolveAnime(options: {

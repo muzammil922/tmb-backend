@@ -253,7 +253,7 @@ export class SeriesService {
           original_language: series.language,
           contentType: series.contentType,
         });
-      const playerSources = this.player.getTvSources(tmdbId, seasonNumber, episodeNumber, {
+      const playerSources = await this.player.getTvSources(tmdbId, seasonNumber, episodeNumber, {
         isAnime,
         title: series.title,
       });
