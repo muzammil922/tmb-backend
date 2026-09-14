@@ -45,47 +45,37 @@ export class EmbedSources {
   getMovieSources(tmdbId: number): PlaybackSource[] {
     const sources: PlaybackSource[] = [];
 
-    // 1. Primary ad-free stream (popups & tracking stripped)
+    // 1. Direct HD Stream (Vidking)
     sources.push({
-      id: 'vidking-clean',
-      name: 'Server 1 (Ad-Free HD)',
+      id: 'vidking',
+      name: 'Server 1 (HD Stream)',
       type: 'embed',
-      url: `/api/player/embed/movie/${tmdbId}`,
+      url: `https://www.vidking.net/embed/movie/${tmdbId}?autoPlay=true`,
     });
 
-    // 2. High-speed global stream
-    sources.push({
-      id: 'vidsrc-to',
-      name: 'Server 2 (Fast Stream)',
-      type: 'embed',
-      url: `https://vidsrc.to/embed/movie/${tmdbId}`,
-    });
-
-    // 3. Resilient cloud backup
+    // 2. Direct Cloud (VidSrc PM)
     sources.push({
       id: 'vidsrc-pm',
-      name: 'Server 3 (Direct Cloud)',
+      name: 'Server 2 (Direct Cloud)',
       type: 'embed',
       url: `https://vidsrc.pm/embed/movie/${tmdbId}`,
     });
 
-    // 4. AutoEmbed multi-stream
+    // 3. AutoEmbed multi-stream
     sources.push({
       id: 'autoembed',
-      name: 'Server 4 (Auto Stream)',
+      name: 'Server 3 (Auto Stream)',
       type: 'embed',
       url: `https://autoembed.co/movie/tmdb/${tmdbId}`,
     });
 
-    // 5. Direct HD backup
-    if (this.vidkingEnabled) {
-      sources.push({
-        id: 'vidking',
-        name: 'Server 5 (HD Backup)',
-        type: 'embed',
-        url: `https://www.vidking.net/embed/movie/${tmdbId}?autoPlay=true`,
-      });
-    }
+    // 4. Fast Global Stream (VidSrc To)
+    sources.push({
+      id: 'vidsrc-to',
+      name: 'Server 4 (Fast Stream)',
+      type: 'embed',
+      url: `https://vidsrc.to/embed/movie/${tmdbId}`,
+    });
 
     return sources;
   }
@@ -93,47 +83,37 @@ export class EmbedSources {
   getTvSources(tmdbId: number, season: number, episode: number): PlaybackSource[] {
     const sources: PlaybackSource[] = [];
 
-    // 1. Primary ad-free stream (popups & tracking stripped)
+    // 1. Direct HD Stream (Vidking)
     sources.push({
-      id: 'vidking-clean',
-      name: 'Server 1 (Ad-Free HD)',
+      id: 'vidking',
+      name: 'Server 1 (HD Stream)',
       type: 'embed',
-      url: `/api/player/embed/tv/${tmdbId}/${season}/${episode}`,
+      url: `https://www.vidking.net/embed/tv/${tmdbId}/${season}/${episode}?autoPlay=true`,
     });
 
-    // 2. High-speed global stream
-    sources.push({
-      id: 'vidsrc-to',
-      name: 'Server 2 (Fast Stream)',
-      type: 'embed',
-      url: `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`,
-    });
-
-    // 3. Resilient cloud backup
+    // 2. Direct Cloud (VidSrc PM)
     sources.push({
       id: 'vidsrc-pm',
-      name: 'Server 3 (Direct Cloud)',
+      name: 'Server 2 (Direct Cloud)',
       type: 'embed',
       url: `https://vidsrc.pm/embed/tv/${tmdbId}/${season}/${episode}`,
     });
 
-    // 4. AutoEmbed multi-stream
+    // 3. AutoEmbed multi-stream
     sources.push({
       id: 'autoembed',
-      name: 'Server 4 (Auto Stream)',
+      name: 'Server 3 (Auto Stream)',
       type: 'embed',
       url: `https://autoembed.co/tv/tmdb/${tmdbId}-${season}-${episode}`,
     });
 
-    // 5. Direct HD backup
-    if (this.vidkingEnabled) {
-      sources.push({
-        id: 'vidking',
-        name: 'Server 5 (HD Backup)',
-        type: 'embed',
-        url: `https://www.vidking.net/embed/tv/${tmdbId}/${season}/${episode}?autoPlay=true`,
-      });
-    }
+    // 4. Fast Global Stream (VidSrc To)
+    sources.push({
+      id: 'vidsrc-to',
+      name: 'Server 4 (Fast Stream)',
+      type: 'embed',
+      url: `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`,
+    });
 
     return sources;
   }

@@ -122,15 +122,7 @@ export class PlayerService {
     try {
       const checks = await Promise.allSettled(
         sources.map(async (source) => {
-          let targetUrl = source.url;
-          if (targetUrl.startsWith('/api/player/embed/movie/')) {
-            const id = targetUrl.replace('/api/player/embed/movie/', '');
-            targetUrl = `https://www.vidking.net/embed/movie/${id}`;
-          } else if (targetUrl.startsWith('/api/player/embed/tv/')) {
-            const parts = targetUrl.replace('/api/player/embed/tv/', '').split('/');
-            targetUrl = `https://www.vidking.net/embed/tv/${parts[0]}/${parts[1]}/${parts[2]}`;
-          }
-
+          const targetUrl = source.url;
           if (!targetUrl.startsWith('http')) {
             return { source, ok: true, time: 20 };
           }
@@ -161,11 +153,11 @@ export class PlayerService {
         }
       });
 
-      // Keep Server 1 (Ad-Free HD) first if online, then sort remaining by ping speed
+      // Keep Server 1 (Vidking HD) first if online, then sort remaining by speed
       const sorted = successful
         .sort((a, b) => {
-          if (a.source.id === 'vidking-clean') return -1;
-          if (b.source.id === 'vidking-clean') return 1;
+          if (a.source.id === 'vidking') return -1;
+          if (b.source.id === 'vidking') return 1;
           return a.time - b.time;
         })
         .map((item) => item.source);
